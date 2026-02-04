@@ -1,0 +1,26 @@
+[project]
+name = "llm-gateway"
+version = "0.1.0"
+description = ""
+authors = [
+    { name = "ThomasKaragiannopoulos", email = "ltcagglos@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi (>=0.128.0,<0.129.0)",
+    "uvicorn[standard] (>=0.40.0,<0.41.0)",
+    "prometheus-client (>=0.24.1,<0.25.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.15.0,<0.16.0)",
+    "pytest (>=9.0.2,<10.0.0)"
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
