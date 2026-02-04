@@ -1,0 +1,26 @@
+PS C:\Users\thkaragi\Projects\PP1\llm-gateway> Invoke-WebRequest -Uri "http://127.0.0.1:8000/v1/admin/keys" -Method Post -ContentType "application/json" -Headers @{ "Authorization"="Bearer admin-secret" } -Body '{"tenant":"ollama-test"}'
+
+
+StatusCode        : 200
+StatusDescription : OK
+Content           : {"tenant":"ollama-test","api_key":"c3f77436-97ba-478d-906b-3d3876b18a17"}
+RawContent        : HTTP/1.1 200 OK
+                    x-request-id: e86b2766-4574-4959-b611-5ba6bb5d99f5
+                    Content-Length: 73
+                    Content-Type: application/json
+                    Date: Wed, 04 Feb 2026 14:46:03 GMT
+                    Server: uvicorn
+
+                    {"tenant":"ollama-test"...
+Forms             : {}
+Headers           : {[x-request-id, e86b2766-4574-4959-b611-5ba6bb5d99f5], [Content-Length, 73], [Content-Type, application/json], [Date, Wed, 04 Feb 2026
+                    14:46:03 GMT]...}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        : mshtml.HTMLDocumentClass
+RawContentLength  : 73
+
+
+
+PS C:\Users\thkaragi\Projects\PP1\llm-gateway>

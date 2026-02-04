@@ -8,6 +8,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.responses import Response
+import httpx
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from redis.asyncio import Redis
 from sqlalchemy import func
@@ -24,6 +25,7 @@ from app.auth import hash_api_key
 from app.db.models import ApiKey, Tenant, UsageEvent
 from app.db.session import get_session
 from app.mock_provider import MockProvider
+from app.ollama_provider import OllamaProvider
 from app.pricing import cost_usd
 from app.routing import ProviderHealth, RoutingPolicy
 from app.schemas import (
@@ -39,12 +41,23 @@ from app.schemas import (
 app = FastAPI(title="llm-gateway")
 PRIMARY_FAIL_RATE = float(os.getenv("PRIMARY_FAIL_RATE", "0"))
 FALLBACK_FAIL_RATE = float(os.getenv("FALLBACK_FAIL_RATE", "0"))
-providers = {
-    "primary": MockProvider(delay_ms=200, fail_rate=PRIMARY_FAIL_RATE),
-    "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
-}
-health_tracker = ProviderHealth(window_size=50)
-routing_policy = RoutingPolicy(error_rate_threshold=0.5)
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+PROVIDER_MODE = os.getenv("PROVIDER_MODE", "mock")
+if PROVIDER_MODE == "ollama":
+    providers = {
+        "primary": OllamaProvider(base_url=OLLAMA_URL),
+        "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
+    }
+else:
+    providers = {
+        "primary": MockProvider(delay_ms=200, fail_rate=PRIMARY_FAIL_RATE),
+        "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
+    }
+HEALTH_MIN_SAMPLES = int(os.getenv("HEALTH_MIN_SAMPLES", "5"))
+HEALTH_ERROR_THRESHOLD = float(os.getenv("HEALTH_ERROR_THRESHOLD", "0.5"))
+health_tracker = ProviderHealth(window_size=50, min_samples=HEALTH_MIN_SAMPLES)
+routing_policy = RoutingPolicy(error_rate_threshold=HEALTH_ERROR_THRESHOLD)
 redis_client: Redis | None = None
 
 REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "60"))
@@ -111,6 +124,17 @@ def health():
 @app.get("/metrics")
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/health/ollama")
+async def ollama_health():
+    provider = providers.get("primary")
+    if not isinstance(provider, OllamaProvider):
+        return {"status": "disabled"}
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{OLLAMA_URL}/api/version")
+        if resp.status_code != 200:
+            return JSONResponse(status_code=503, content={"status": "down"})
+        return {"status": "ok", "version": resp.json().get("version")}
 
 
 @app.on_event("startup")
@@ -182,11 +206,14 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
                 db.refresh(tenant)
 
         decision = routing_policy.choose(tenant.tier, health_tracker)
-        routed_payload = payload.model_copy(update={"model": decision.model})
+        model_name = decision.model
+        if isinstance(providers.get(decision.provider), OllamaProvider):
+            model_name = OLLAMA_MODEL
+        routed_payload = payload.model_copy(update={"model": model_name})
 
         req_row = RequestModel(
             tenant_id=tenant.id,
-            model=decision.model,
+            model=model_name,
             status="in_progress",
             request_payload=routed_payload.model_dump_json(),
         )
@@ -195,7 +222,8 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
         used_provider = decision.provider
         provider = providers[decision.provider]
         try:
-            response_obj = await provider.generate(routed_payload)
+            result = await provider.generate(routed_payload)
+            response_obj = result.response
             health_tracker.record(decision.provider, True)
         except Exception:
             health_tracker.record(decision.provider, False)
@@ -205,7 +233,8 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
             FALLBACK_TOTAL.labels("primary_error", decision.provider, fallback_provider).inc()
             provider = providers[fallback_provider]
             used_provider = fallback_provider
-            response_obj = await provider.generate(routed_payload)
+            result = await provider.generate(routed_payload)
+            response_obj = result.response
             health_tracker.record(fallback_provider, True)
         if decision.reason == "primary_unhealthy" and decision.fallback_provider:
             FALLBACK_TOTAL.labels("primary_unhealthy", decision.fallback_provider, decision.provider).inc()
@@ -214,28 +243,28 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
         req_row.status = "completed"
         req_row.response_payload = response_obj.model_dump_json()
         req_row.latency_ms = elapsed_ms
-        req_row.prompt_tokens = 1
-        req_row.completion_tokens = 1
-        req_row.total_tokens = 2
-        req_row.cost_usd = cost_usd(decision.model, req_row.total_tokens)
+        req_row.prompt_tokens = result.prompt_tokens
+        req_row.completion_tokens = result.completion_tokens
+        req_row.total_tokens = result.total_tokens
+        req_row.cost_usd = cost_usd(model_name, req_row.total_tokens)
         req_row.completed_at = func.now()
         db.add(req_row)
         usage = UsageEvent(
             tenant_id=tenant.id,
             request_id=req_row.id,
-            model=decision.model,
+            model=model_name,
             tokens=req_row.total_tokens,
             cost_usd=req_row.cost_usd or 0.0,
         )
         db.add(usage)
         db.commit()
 
-        TOKENS_TOTAL.labels(decision.model).inc(req_row.total_tokens or 0)
-        COST_TOTAL.labels(decision.model).inc(req_row.cost_usd or 0.0)
+        TOKENS_TOTAL.labels(model_name).inc(req_row.total_tokens or 0)
+        COST_TOTAL.labels(model_name).inc(req_row.cost_usd or 0.0)
         TENANT_REQUESTS_TOTAL.labels(tenant.name, tenant.tier).inc()
         TENANT_TOKENS_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.total_tokens or 0)
         TENANT_COST_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.cost_usd or 0.0)
-        response.headers["X-Model-Chosen"] = decision.model
+        response.headers["X-Model-Chosen"] = model_name
         response.headers["X-Route-Reason"] = "primary_error" if used_provider != decision.provider else decision.reason
         response.headers["X-Provider"] = used_provider
         return response_obj
@@ -305,6 +334,15 @@ async def set_limits(payload: LimitsRequest, request: Request):
     )
 
 
+@app.post("/v1/admin/health/reset")
+async def reset_health(request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+    health_tracker.reset()
+    return {"status": "ok"}
+
+
 @app.get("/v1/admin/usage/{tenant_name}", response_model=UsageSummaryResponse)
 async def usage_summary(tenant_name: str, request: Request):
     admin_id = _get_admin_tenant_id()
@@ -341,7 +379,7 @@ async def usage_summary(tenant_name: str, request: Request):
 
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics"}:
+    if request.url.path in {"/health", "/metrics", "/health/ollama"}:
         return await call_next(request)
 
     raw_key = None
@@ -370,7 +408,7 @@ async def api_key_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def rate_limit_requests(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics"}:
+    if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
     if redis_client is None:
@@ -416,7 +454,7 @@ async def rate_limit_requests(request: Request, call_next):
 
 @app.middleware("http")
 async def quota_limits(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics"}:
+    if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
     tenant_id = getattr(request.state, "tenant_id", None)

@@ -2,7 +2,7 @@ import asyncio
 import time
 import uuid
 
-from app.provider import Provider
+from app.provider import Provider, ProviderResult
 from app.schemas import ChatRequest, ChatResponse
 
 
@@ -19,11 +19,20 @@ class MockProvider(Provider):
                 raise RuntimeError("mock provider failure")
         await asyncio.sleep(self.delay_ms / 1000)
         content = "mock response"
-        return ChatResponse(
+        response = ChatResponse(
             id=str(uuid.uuid4()),
             model=request.model,
             created=int(time.time()),
             content=content,
+        )
+        prompt_tokens = 1
+        completion_tokens = 1
+        total_tokens = prompt_tokens + completion_tokens
+        return ProviderResult(
+            response=response,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
         )
 
     async def stream(self, request: ChatRequest):
