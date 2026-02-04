@@ -30,3 +30,31 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorDetail
+
+
+class CreateKeyRequest(BaseModel):
+    tenant: str = Field(min_length=1)
+
+
+class CreateKeyResponse(BaseModel):
+    tenant: str
+    api_key: str
+
+
+class LimitsRequest(BaseModel):
+    tenant: str = Field(min_length=1)
+    token_limit_per_day: int | None = Field(default=None, gt=0)
+    spend_limit_per_day_usd: float | None = Field(default=None, gt=0)
+
+
+class LimitsResponse(BaseModel):
+    tenant: str
+    token_limit_per_day: int | None
+    spend_limit_per_day_usd: float | None
+
+
+class UsageSummaryResponse(BaseModel):
+    tenant: str
+    requests: int
+    tokens: int
+    cost_usd: float

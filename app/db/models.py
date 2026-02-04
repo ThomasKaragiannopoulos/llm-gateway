@@ -12,7 +12,10 @@ class Tenant(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    tier: Mapped[str] = mapped_column(String(50), nullable=False, default="free")
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    token_limit_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    spend_limit_per_day_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="tenant")
     requests: Mapped[list["Request"]] = relationship(back_populates="tenant")
