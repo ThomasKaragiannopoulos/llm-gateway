@@ -13,8 +13,9 @@ class RouteDecision:
 
 
 class ProviderHealth:
-    def __init__(self, window_size: int = 50) -> None:
+    def __init__(self, window_size: int = 50, min_samples: int = 5) -> None:
         self._window_size = window_size
+        self._min_samples = min_samples
         self._results: dict[str, deque[bool]] = {}
 
     def record(self, provider: str, success: bool) -> None:
@@ -26,8 +27,13 @@ class ProviderHealth:
         results = self._results.get(provider)
         if not results:
             return 0.0
+        if len(results) < self._min_samples:
+            return 0.0
         failures = sum(1 for ok in results if not ok)
         return failures / len(results)
+
+    def reset(self) -> None:
+        self._results.clear()
 
 
 class RoutingPolicy:
