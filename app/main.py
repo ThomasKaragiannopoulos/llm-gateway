@@ -25,6 +25,7 @@ from app.db.models import ApiKey, Tenant, UsageEvent
 from app.db.session import get_session
 from app.mock_provider import MockProvider
 from app.pricing import cost_usd
+from app.routing import ProviderHealth, RoutingPolicy
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -36,7 +37,14 @@ from app.schemas import (
 )
 
 app = FastAPI(title="llm-gateway")
-provider = MockProvider()
+PRIMARY_FAIL_RATE = float(os.getenv("PRIMARY_FAIL_RATE", "0"))
+FALLBACK_FAIL_RATE = float(os.getenv("FALLBACK_FAIL_RATE", "0"))
+providers = {
+    "primary": MockProvider(delay_ms=200, fail_rate=PRIMARY_FAIL_RATE),
+    "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
+}
+health_tracker = ProviderHealth(window_size=50)
+routing_policy = RoutingPolicy(error_rate_threshold=0.5)
 redis_client: Redis | None = None
 
 REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "60"))
@@ -71,6 +79,16 @@ TENANT_COST_TOTAL = Counter(
 RATE_LIMITED_TOTAL = Counter(
     "rate_limited_total",
     "Total requests rate limited",
+    ["reason"],
+)
+FALLBACK_TOTAL = Counter(
+    "fallback_total",
+    "Total fallbacks",
+    ["reason", "from_provider", "to_provider"],
+)
+QUOTA_DENIED_TOTAL = Counter(
+    "quota_denied_total",
+    "Total requests denied due to budget/quota",
     ["reason"],
 )
 TOKENS_TOTAL = Counter(
@@ -146,7 +164,7 @@ def _get_admin_tenant_id():
 
 
 @app.post("/v1/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(payload: ChatRequest, request: Request, response: Response):
     db = get_session()
     req_row = None
     start = time.perf_counter()
@@ -163,43 +181,64 @@ async def chat(request: ChatRequest):
                 db.commit()
                 db.refresh(tenant)
 
+        decision = routing_policy.choose(tenant.tier, health_tracker)
+        routed_payload = payload.model_copy(update={"model": decision.model})
+
         req_row = RequestModel(
             tenant_id=tenant.id,
-            model=request.model,
+            model=decision.model,
             status="in_progress",
-            request_payload=request.model_dump_json(),
+            request_payload=routed_payload.model_dump_json(),
         )
         db.add(req_row)
         db.commit()
-
-        response = await provider.generate(request)
+        used_provider = decision.provider
+        provider = providers[decision.provider]
+        try:
+            response_obj = await provider.generate(routed_payload)
+            health_tracker.record(decision.provider, True)
+        except Exception:
+            health_tracker.record(decision.provider, False)
+            fallback_provider = decision.fallback_provider
+            if fallback_provider is None:
+                raise
+            FALLBACK_TOTAL.labels("primary_error", decision.provider, fallback_provider).inc()
+            provider = providers[fallback_provider]
+            used_provider = fallback_provider
+            response_obj = await provider.generate(routed_payload)
+            health_tracker.record(fallback_provider, True)
+        if decision.reason == "primary_unhealthy" and decision.fallback_provider:
+            FALLBACK_TOTAL.labels("primary_unhealthy", decision.fallback_provider, decision.provider).inc()
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         req_row.status = "completed"
-        req_row.response_payload = response.model_dump_json()
+        req_row.response_payload = response_obj.model_dump_json()
         req_row.latency_ms = elapsed_ms
         req_row.prompt_tokens = 1
         req_row.completion_tokens = 1
         req_row.total_tokens = 2
-        req_row.cost_usd = cost_usd(request.model, req_row.total_tokens)
+        req_row.cost_usd = cost_usd(decision.model, req_row.total_tokens)
         req_row.completed_at = func.now()
         db.add(req_row)
         usage = UsageEvent(
             tenant_id=tenant.id,
             request_id=req_row.id,
-            model=request.model,
+            model=decision.model,
             tokens=req_row.total_tokens,
             cost_usd=req_row.cost_usd or 0.0,
         )
         db.add(usage)
         db.commit()
 
-        TOKENS_TOTAL.labels(request.model).inc(req_row.total_tokens or 0)
-        COST_TOTAL.labels(request.model).inc(req_row.cost_usd or 0.0)
+        TOKENS_TOTAL.labels(decision.model).inc(req_row.total_tokens or 0)
+        COST_TOTAL.labels(decision.model).inc(req_row.cost_usd or 0.0)
         TENANT_REQUESTS_TOTAL.labels(tenant.name, tenant.tier).inc()
         TENANT_TOKENS_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.total_tokens or 0)
         TENANT_COST_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.cost_usd or 0.0)
-        return response
+        response.headers["X-Model-Chosen"] = decision.model
+        response.headers["X-Route-Reason"] = "primary_error" if used_provider != decision.provider else decision.reason
+        response.headers["X-Provider"] = used_provider
+        return response_obj
     except Exception:
         if req_row is not None:
             req_row.status = "failed"
@@ -376,10 +415,73 @@ async def rate_limit_requests(request: Request, call_next):
 
 
 @app.middleware("http")
+async def quota_limits(request: Request, call_next):
+    if request.url.path in {"/health", "/metrics"}:
+        return await call_next(request)
+
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if tenant_id is None:
+        return await call_next(request)
+
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return await call_next(request)
+
+        if tenant.token_limit_per_day is None and tenant.spend_limit_per_day_usd is None:
+            return await call_next(request)
+
+        today = func.date(func.now())
+        totals = (
+            db.query(
+                func.coalesce(func.sum(UsageEvent.tokens), 0),
+                func.coalesce(func.sum(UsageEvent.cost_usd), 0.0),
+            )
+            .filter(UsageEvent.tenant_id == tenant.id)
+            .filter(func.date(UsageEvent.created_at) == today)
+            .one()
+        )
+        tokens_used = int(totals[0] or 0)
+        cost_used = float(totals[1] or 0.0)
+
+        warn_headers = {}
+        if tenant.token_limit_per_day:
+            remaining_tokens = tenant.token_limit_per_day - tokens_used
+            warn_headers["X-RateLimit-Tokens-Remaining"] = str(max(remaining_tokens, 0))
+            if remaining_tokens <= 0:
+                QUOTA_DENIED_TOTAL.labels("token_limit").inc()
+                return JSONResponse(
+                    status_code=429,
+                    headers=warn_headers,
+                    content={"error": {"code": "quota_exceeded", "message": "Daily token budget exceeded"}},
+                )
+
+        if tenant.spend_limit_per_day_usd:
+            remaining_spend = tenant.spend_limit_per_day_usd - cost_used
+            warn_headers["X-RateLimit-Spend-Remaining"] = f"{max(remaining_spend, 0):.6f}"
+            if remaining_spend <= 0:
+                QUOTA_DENIED_TOTAL.labels("spend_limit").inc()
+                return JSONResponse(
+                    status_code=429,
+                    headers=warn_headers,
+                    content={"error": {"code": "quota_exceeded", "message": "Daily spend budget exceeded"}},
+                )
+
+        response = await call_next(request)
+        for k, v in warn_headers.items():
+            response.headers[k] = v
+        return response
+    finally:
+        db.close()
+
+
+@app.middleware("http")
 async def log_requests(request: Request, call_next):
     request_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
     idempotency_key = request.headers.get("Idempotency-Key")
     start = time.perf_counter()
+    response = None
     try:
         response = await call_next(request)
     finally:
@@ -394,6 +496,9 @@ async def log_requests(request: Request, call_next):
             "idempotency_key": idempotency_key,
         }
         logger.info(json.dumps(payload, separators=(",", ":")))
+
+    if response is None:
+        return JSONResponse(status_code=500, content={"error": {"code": "internal_error", "message": "Unhandled error"}})
 
     response.headers["X-Request-Id"] = request_id
     if idempotency_key:

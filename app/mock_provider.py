@@ -7,10 +7,16 @@ from app.schemas import ChatRequest, ChatResponse
 
 
 class MockProvider(Provider):
-    def __init__(self, delay_ms: int = 200) -> None:
+    def __init__(self, delay_ms: int = 200, fail_rate: float = 0.0) -> None:
         self.delay_ms = delay_ms
+        self.fail_rate = fail_rate
 
     async def generate(self, request: ChatRequest) -> ChatResponse:
+        if self.fail_rate > 0:
+            import random
+
+            if random.random() < self.fail_rate:
+                raise RuntimeError("mock provider failure")
         await asyncio.sleep(self.delay_ms / 1000)
         content = "mock response"
         return ChatResponse(
