@@ -16,7 +16,7 @@ services:
       POSTGRES_PASSWORD: llm
       POSTGRES_DB: llm_gateway
     ports:
-      - "5432:5432"
+      - "1312:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
 
