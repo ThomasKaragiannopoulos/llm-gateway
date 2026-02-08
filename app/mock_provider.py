@@ -2,7 +2,7 @@ import asyncio
 import time
 import uuid
 
-from app.provider import Provider, ProviderResult
+from app.provider import Provider, ProviderResult, StreamChunk
 from app.schemas import ChatRequest, ChatResponse
 
 
@@ -11,7 +11,7 @@ class MockProvider(Provider):
         self.delay_ms = delay_ms
         self.fail_rate = fail_rate
 
-    async def generate(self, request: ChatRequest) -> ChatResponse:
+    async def generate(self, request: ChatRequest) -> ProviderResult:
         if self.fail_rate > 0:
             import random
 
@@ -37,6 +37,12 @@ class MockProvider(Provider):
 
     async def stream(self, request: ChatRequest):
         await asyncio.sleep(self.delay_ms / 1000)
-        yield "mock "
+        yield StreamChunk(content="mock ")
         await asyncio.sleep(self.delay_ms / 1000)
-        yield "response"
+        yield StreamChunk(
+            content="response",
+            done=True,
+            model=request.model,
+            prompt_tokens=1,
+            completion_tokens=1,
+        )

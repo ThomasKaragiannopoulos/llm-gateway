@@ -15,6 +15,15 @@ class ProviderResult:
     total_tokens: int
 
 
+@dataclass(frozen=True)
+class StreamChunk:
+    content: str
+    done: bool = False
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
 class Provider(ABC):
     @abstractmethod
     async def generate(self, request: ChatRequest) -> ProviderResult:
