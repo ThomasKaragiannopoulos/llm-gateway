@@ -1,9 +1,10 @@
+import json
 import time
 import uuid
 
 import httpx
 
-from app.provider import Provider, ProviderResult
+from app.provider import Provider, ProviderResult, StreamChunk
 from app.schemas import ChatMessage, ChatRequest, ChatResponse
 
 
@@ -52,7 +53,42 @@ class OllamaProvider(Provider):
         )
 
     async def stream(self, request: ChatRequest):
-        raise NotImplementedError
+        payload = {
+            "model": request.model,
+            "messages": [msg.model_dump() for msg in request.messages],
+            "stream": True,
+            "options": {},
+        }
+        if request.temperature is not None:
+            payload["options"]["temperature"] = request.temperature
+        if request.max_tokens is not None:
+            payload["options"]["num_predict"] = request.max_tokens
+
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    message = data.get("message") or {}
+                    content = message.get("content") or ""
+                    done = bool(data.get("done"))
+                    if done:
+                        prompt_tokens = int(data.get("prompt_eval_count") or 0)
+                        completion_tokens = int(data.get("eval_count") or 0)
+                        if prompt_tokens + completion_tokens == 0:
+                            completion_tokens = _estimate_tokens(request.messages, content)
+                        yield StreamChunk(
+                            content=content,
+                            done=True,
+                            model=data.get("model", request.model),
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                        )
+                    else:
+                        if content:
+                            yield StreamChunk(content=content)
 
 
 def _estimate_tokens(messages: list[ChatMessage], content: str) -> int:
