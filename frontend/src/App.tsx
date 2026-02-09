@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type ErrorDetail = { code: string; message: string };
 
@@ -134,6 +134,10 @@ export default function App() {
   const [error, setError] = useState<ErrorDetail | null>(null);
   const [headers, setHeaders] = useState<HeaderMeta>(defaultHeaders);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [gatewayHealthy, setGatewayHealthy] = useState(false);
+  const [apiKeysReady, setApiKeysReady] = useState(false);
+  const [adminKeyInvalid, setAdminKeyInvalid] = useState(false);
+  const startupAtRef = useRef<number>(Date.now());
   const [usageMeta, setUsageMeta] = useState<UsageMeta>({
     promptTokens: null,
     completionTokens: null,
@@ -212,8 +216,15 @@ export default function App() {
       setStatus("done");
     } catch (err) {
       setStatus("idle");
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError({ code: "client_error", message });
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "Request failed. Ensure the gateway is running on http://localhost:8000 and refresh the page.";
+      const friendly =
+        message === "Failed to fetch"
+          ? "Gateway not reachable. Start the stack with `docker compose up --build`, then refresh."
+          : message;
+      setError({ code: "client_error", message: friendly });
     }
   };
 
@@ -370,7 +381,6 @@ export default function App() {
   const [adminMessage, setAdminMessage] = useState<string | null>(null);
   const [obsSummary, setObsSummary] = useState<ObservabilitySummary | null>(null);
   const [obsLoading, setObsLoading] = useState(false);
-  const [obsScope, setObsScope] = useState<"global" | "tenant">("global");
   const [bootstrapKey, setBootstrapKey] = useState<string | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [rotateError, setRotateError] = useState<string | null>(null);
@@ -406,14 +416,18 @@ export default function App() {
   const activeStoredKeys = useMemo(() => {
     return storedKeys.filter((entry) => activeKeyNames.has(entry.name));
   }, [storedKeys, activeKeyNames]);
+  const retrievableKeyNames = useMemo(() => {
+    return new Set(storedKeys.map((entry) => entry.name));
+  }, [storedKeys]);
   const activeKeyOptions = useMemo(() => {
     return apiKeys
       .filter((key) => key.active)
       .map((key) => ({
         name: key.name ?? key.tenant,
-        tenant: key.tenant
+        tenant: key.tenant,
+        retrievable: retrievableKeyNames.has(key.name ?? key.tenant)
       }));
-  }, [apiKeys]);
+  }, [apiKeys, retrievableKeyNames]);
 
   const callAdmin = async <T,>(path: string, body?: Record<string, unknown>) => {
     if (!adminKey) {
@@ -458,17 +472,11 @@ export default function App() {
   const fetchObservability = async () => {
     if (!apiKey) {
       setApiKeysError("Select an API key first.");
-      if (obsScope === "tenant") {
-        return;
-      }
+      return;
     }
     setObsLoading(true);
     try {
-      const params =
-        obsScope === "tenant" && selectedKeyName
-          ? `?tenant=${encodeURIComponent(selectedKeyName)}`
-          : "";
-      const res = await fetch(`${baseUrl}/v1/observability/summary${params}`, {
+      const res = await fetch(`${baseUrl}/v1/observability/summary`, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${apiKey}`
@@ -520,6 +528,11 @@ export default function App() {
       });
       setPricingMap(next);
     } catch (err) {
+      const now = Date.now();
+      const inStartupWindow = now - startupAtRef.current < 20000;
+      if (inStartupWindow) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Unknown error";
       setPricingError(message);
     }
@@ -621,7 +634,7 @@ export default function App() {
   const refreshApiKeys = async (overrideAdminKey?: string, silent?: boolean) => {
     const keyToUse = overrideAdminKey ?? adminKey;
     if (!keyToUse) {
-      return;
+      return false;
     }
     setApiKeysLoading(true);
     if (!silent) {
@@ -639,18 +652,57 @@ export default function App() {
         if (!silent) {
           setApiKeysError(`${err.code}: ${err.message}`);
         }
-        setApiKeys([]);
+        if (!silent) {
+          setApiKeys([]);
+        }
+        if (res.status === 401 || res.status === 403) {
+          setApiKeysReady(true);
+          const autoKeyFlag = "llm_gateway_auto_bootstrap_done";
+          if (!window.sessionStorage.getItem(autoKeyFlag)) {
+            window.sessionStorage.setItem(autoKeyFlag, "true");
+            try {
+              const bootstrapRes = await fetch(`${baseUrl}/v1/admin/bootstrap`, {
+                method: "POST"
+              });
+                if (bootstrapRes.ok) {
+                  const data = (await bootstrapRes.json()) as { api_key: string };
+                  setAdminKey(data.api_key);
+                  setBootstrapKey(data.api_key);
+                  setLastGeneratedKey("");
+                  setApiKeysError(null);
+                  setAdminKeyInvalid(false);
+                  return await refreshApiKeys(data.api_key, true);
+                }
+            } catch {
+              // fall through to show invalid key message
+            }
+          }
+          setAdminKey("");
+          setApiKeys([]);
+          setAdminKeyInvalid(true);
+          setApiKeysError("Admin key is invalid. Generate a new admin key.");
+        }
         setApiKeysLoading(false);
-        return;
+        return false;
       }
       const data = (await res.json()) as { keys: ApiKeyEntry[] };
       setApiKeys(data.keys);
       setApiKeysError(null);
+      setApiKeysReady(true);
+      setAdminKeyInvalid(false);
+      return true;
     } catch (err) {
+      const now = Date.now();
+      const inStartupWindow = now - startupAtRef.current < 20000;
+      if (inStartupWindow) {
+        setApiKeysReady(false);
+        return false;
+      }
       const message = err instanceof Error ? err.message : "Unknown error";
       if (!silent) {
         setApiKeysError(message);
       }
+      return false;
     } finally {
       setApiKeysLoading(false);
     }
@@ -731,13 +783,52 @@ export default function App() {
 
   useEffect(() => {
     if (adminKey) {
+      setApiKeysReady(false);
+      setAdminKeyInvalid(false);
       refreshApiKeys(undefined, true);
       loadPricing();
     } else {
       setApiKeys([]);
       setApiKeysError(null);
+      setApiKeysReady(true);
+      setAdminKeyInvalid(false);
     }
   }, [adminKey]);
+
+  useEffect(() => {
+    if (!adminKey) {
+      return;
+    }
+    if (adminKeyInvalid) {
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
+    let attempts = 0;
+    const maxAttempts = 20;
+    const poll = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      const ok = await refreshApiKeys(undefined, true);
+      inFlight = false;
+      attempts += 1;
+      if (ok && apiKeys.length > 1) {
+        cancelled = true;
+        return;
+      }
+      if (attempts >= maxAttempts) {
+        cancelled = true;
+      }
+    };
+    const timer = window.setInterval(poll, 1500);
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [adminKey, adminKeyInvalid, apiKeys.length]);
 
   useEffect(() => {
     const existing = pricingMap[model];
@@ -765,31 +856,22 @@ export default function App() {
   }, [selectedKeyName, activeStoredKeys]);
 
   useEffect(() => {
-    const flagKey = "llm_gateway_autorefresh_once";
-    if (window.sessionStorage.getItem(flagKey) === "true") {
-      return;
-    }
-    let wasHealthy = false;
     let cancelled = false;
     const checkHealth = async () => {
       try {
         const res = await fetch(`${baseUrl}/health`, { method: "GET" });
+        if (!cancelled) {
+          setGatewayHealthy(res.ok);
+        }
         if (res.ok) {
-          if (!wasHealthy && !cancelled) {
-            wasHealthy = true;
-            window.sessionStorage.setItem(flagKey, "true");
-            window.location.reload();
-            return;
-          }
-          wasHealthy = true;
-          return;
+          cancelled = true;
         }
       } catch {
-        // fall through to mark unhealthy
+        if (!cancelled) {
+          setGatewayHealthy(false);
+        }
       }
-      wasHealthy = false;
     };
-
     const timer = window.setInterval(checkHealth, 1500);
     checkHealth();
     return () => {
@@ -797,6 +879,59 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [baseUrl]);
+
+  useEffect(() => {
+    const reloadCountKey = "llm_gateway_autoreload_count";
+    const maxReloads = 4;
+    const rawCount = window.sessionStorage.getItem(reloadCountKey);
+    const reloadCount = rawCount ? Number(rawCount) : 0;
+    if (reloadCount >= maxReloads) {
+      return;
+    }
+    let cancelled = false;
+    const checkAndReload = async () => {
+      try {
+        const res = await fetch(`${baseUrl}/health`, { method: "GET" });
+        if (!res.ok) {
+          return;
+        }
+        if (!adminKey || apiKeys.length > 1) {
+          cancelled = true;
+          return;
+        }
+        if (cancelled) {
+          return;
+        }
+        window.sessionStorage.setItem(reloadCountKey, String(reloadCount + 1));
+        window.location.reload();
+        cancelled = true;
+      } catch {
+        // ignore and retry on next interval
+      }
+    };
+
+    checkAndReload();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUrl, adminKey, apiKeys.length]);
+
+  const appReady = gatewayHealthy && (!adminKey || apiKeysReady || adminKeyInvalid);
+  const loadingMessage = gatewayHealthy
+    ? "Fetching keys..."
+    : "Starting gateway services...";
+
+  if (!appReady) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-card">
+          <div className="loading-title">LLM Gateway</div>
+          <div className="loading-subtitle">{loadingMessage}</div>
+          <div className="loading-spinner" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -884,6 +1019,7 @@ export default function App() {
                       {activeKeyOptions.map((entry) => (
                         <option key={entry.name} value={entry.name}>
                           {entry.name}
+                          {entry.retrievable ? "" : " (requires key)"}
                         </option>
                       ))}
                     </select>
@@ -1054,16 +1190,6 @@ export default function App() {
             <div className="card">
               <h3>Observability</h3>
               <div className="form">
-                <div className="field">
-                  <label>Scope</label>
-                  <select
-                    value={obsScope}
-                    onChange={(e) => setObsScope(e.target.value as "global" | "tenant")}
-                  >
-                    <option value="global">Global</option>
-                    <option value="tenant">Selected Key</option>
-                  </select>
-                </div>
                 <button className="button" onClick={fetchObservability}>
                   Refresh Metrics
                 </button>
@@ -1164,12 +1290,15 @@ export default function App() {
                   )}
                   {!apiKeysLoading && apiKeys.length > 0 && (
                     <div className="grid">
-                      {apiKeys.map((key) => (
+                      {apiKeys.map((key) => {
+                        const keyName = key.name ?? key.tenant;
+                        const retrievable = retrievableKeyNames.has(keyName);
+                        return (
                         <div className="card" key={key.id}>
                           <div className="row" style={{ columnGap: 16 }}>
                             <div>
                               <div className="pill">Name</div>
-                              <div className="value">{key.name ?? key.tenant}</div>
+                              <div className="value">{keyName}</div>
                             </div>
                             <div>
                               <div className="pill">Status</div>
@@ -1186,9 +1315,14 @@ export default function App() {
                                 )}
                               </div>
                             </div>
+                            <div>
+                              <div className="pill">Retrievable</div>
+                              <div className="value">{retrievable ? "yes" : "no"}</div>
+                            </div>
                           </div>
                         </div>
-                      ))}
+                      );
+                    })}
                     </div>
                   )}
                 </div>

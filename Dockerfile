@@ -14,7 +14,9 @@ RUN poetry install --no-interaction --no-ansi --only main
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY app ./app
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8000
 
-CMD ["poetry", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/entrypoint.sh"]
