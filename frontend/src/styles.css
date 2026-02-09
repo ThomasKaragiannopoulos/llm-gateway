@@ -231,6 +231,50 @@ a {
   color: var(--accent);
 }
 
+.loading-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at top, #1f2937 0%, #0b1020 55%, #070a16 100%);
+}
+
+.loading-card {
+  background: linear-gradient(135deg, rgba(17, 28, 59, 0.95), rgba(7, 12, 28, 0.95));
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 28px 32px;
+  box-shadow: 0 20px 40px var(--shadow);
+  text-align: center;
+  min-width: 280px;
+}
+
+.loading-title {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.loading-subtitle {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid rgba(125, 211, 252, 0.2);
+  border-top-color: var(--accent);
+  margin: 18px auto 0;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 900px) {
   .app {
     grid-template-columns: 1fr;

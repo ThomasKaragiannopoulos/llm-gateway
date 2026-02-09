@@ -934,43 +934,20 @@ async def _prom_query(query: str) -> float:
 
 @app.get("/v1/observability/summary", response_model=ObservabilitySummaryResponse)
 async def observability_summary(request: Request):
-    tenant_name = request.query_params.get("tenant")
-    scope = "tenant" if tenant_name else "global"
-
-    if tenant_name:
-        request_rate = await _prom_query(
-            f'sum(rate(tenant_requests_total{{tenant="{tenant_name}"}}[5m]))'
-        )
-        error_ratio = 0.0
-        p95_latency = 0.0
-        cache_hits = await _prom_query(
-            f'sum(rate(cache_hits_total{{tenant="{tenant_name}"}}[5m]))'
-        )
-        cache_misses = await _prom_query(
-            f'sum(rate(cache_misses_total{{tenant="{tenant_name}"}}[5m]))'
-        )
-        rate_limited = await _prom_query('sum(rate(rate_limited_total[5m]))')
-        tokens_total = await _prom_query(
-            f'sum(tenant_tokens_total{{tenant="{tenant_name}"}})'
-        )
-        cost_total = await _prom_query(
-            f'sum(tenant_cost_total{{tenant="{tenant_name}"}})'
-        )
-    else:
-        request_rate = await _prom_query('sum(rate(http_requests_total[5m]))')
-        error_rate = await _prom_query(
-            'sum(rate(http_requests_total{status_code=~"4..|5.."}[5m]))'
-        )
-        total_rate = await _prom_query('sum(rate(http_requests_total[5m]))')
-        error_ratio = (error_rate / total_rate) if total_rate > 0 else 0.0
-        p95_latency = await _prom_query(
-            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
-        )
-        cache_hits = await _prom_query('sum(rate(cache_hits_total[5m]))')
-        cache_misses = await _prom_query('sum(rate(cache_misses_total[5m]))')
-        rate_limited = await _prom_query('sum(rate(rate_limited_total[5m]))')
-        tokens_total = await _prom_query('sum(tokens_total)')
-        cost_total = await _prom_query('sum(cost_total)')
+    request_rate = await _prom_query('sum(rate(http_requests_total[5m]))')
+    error_rate = await _prom_query(
+        'sum(rate(http_requests_total{status_code=~"4..|5.."}[5m]))'
+    )
+    total_rate = await _prom_query('sum(rate(http_requests_total[5m]))')
+    error_ratio = (error_rate / total_rate) if total_rate > 0 else 0.0
+    p95_latency = await _prom_query(
+        "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
+    )
+    cache_hits = await _prom_query('sum(rate(cache_hits_total[5m]))')
+    cache_misses = await _prom_query('sum(rate(cache_misses_total[5m]))')
+    rate_limited = await _prom_query('sum(rate(rate_limited_total[5m]))')
+    tokens_total = await _prom_query('sum(tokens_total)')
+    cost_total = await _prom_query('sum(cost_total)')
     cache_total = cache_hits + cache_misses
     cache_hit_rate = (cache_hits / cache_total) if cache_total > 0 else 0.0
 
@@ -982,8 +959,8 @@ async def observability_summary(request: Request):
         rate_limited_per_s=rate_limited,
         tokens_total=tokens_total,
         cost_total=cost_total,
-        scope=scope,
-        tenant=tenant_name,
+        scope="global",
+        tenant=None,
     )
 
 
