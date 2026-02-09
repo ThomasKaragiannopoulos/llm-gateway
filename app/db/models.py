@@ -26,6 +26,7 @@ class ApiKey(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     key_hash: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -74,3 +75,14 @@ class UsageEvent(Base):
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     request: Mapped["Request"] = relationship(back_populates="usage_events")
+
+
+class Pricing(Base):
+    __tablename__ = "pricing"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    model: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    input_per_1k: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    output_per_1k: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cached_per_1k: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())

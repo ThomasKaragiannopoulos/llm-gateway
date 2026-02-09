@@ -8,6 +8,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
@@ -25,11 +26,12 @@ logger.propagate = False
 
 from app.db.models import Request as RequestModel
 from app.auth import hash_api_key
-from app.db.models import ApiKey, Tenant, UsageEvent
+from app.db.models import ApiKey, Pricing, Tenant, UsageEvent
 from app.db.session import get_session
 from app.mock_provider import MockProvider
 from app.ollama_provider import OllamaProvider
 from app.pricing import cost_usd
+from app.pricing import merge_pricing
 from app.provider import StreamChunk
 from app.routing import ProviderHealth, RoutingPolicy
 from app.schemas import (
@@ -37,12 +39,25 @@ from app.schemas import (
     ChatResponse,
     CreateKeyRequest,
     CreateKeyResponse,
+    ApiKeyListResponse,
+    PricingItem,
+    PricingResponse,
+    ObservabilitySummaryResponse,
     LimitsRequest,
     LimitsResponse,
     UsageSummaryResponse,
 )
 
 app = FastAPI(title="llm-gateway")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+allowed_origins = [origin.strip() for origin in ALLOWED_ORIGINS.split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 PRIMARY_FAIL_RATE = float(os.getenv("PRIMARY_FAIL_RATE", "0"))
 FALLBACK_FAIL_RATE = float(os.getenv("FALLBACK_FAIL_RATE", "0"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -131,6 +146,8 @@ CACHE_MISSES_TOTAL = Counter(
     ["tenant", "model"],
 )
 
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
+
 
 @app.get("/health")
 def health():
@@ -201,6 +218,59 @@ def _get_admin_tenant_id():
         return admin_tenant.id
     finally:
         db.close()
+
+def _admin_key_exists() -> bool:
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None:
+        return False
+    db = get_session()
+    try:
+        existing = (
+            db.query(ApiKey)
+            .filter(ApiKey.tenant_id == admin_id, ApiKey.active.is_(True))
+            .first()
+        )
+        return existing is not None
+    finally:
+        db.close()
+
+def _rotate_admin_key() -> str:
+    raw_key = str(uuid.uuid4())
+    key_hash = hash_api_key(raw_key)
+    db = get_session()
+    try:
+        admin_tenant = db.query(Tenant).filter(Tenant.name == "admin").one_or_none()
+        if admin_tenant is None:
+            admin_tenant = Tenant(name="admin")
+            db.add(admin_tenant)
+            db.commit()
+            db.refresh(admin_tenant)
+        db.query(ApiKey).filter(ApiKey.tenant_id == admin_tenant.id).update(
+            {ApiKey.active: False}
+        )
+        db.add(ApiKey(tenant_id=admin_tenant.id, name="admin", key_hash=key_hash, active=True))
+        db.commit()
+    finally:
+        db.close()
+    return raw_key
+
+
+def _get_pricing_map() -> dict:
+    db = get_session()
+    try:
+        rows = db.query(Pricing).all()
+        items = [
+            {
+                "model": row.model,
+                "input_per_1k": row.input_per_1k,
+                "output_per_1k": row.output_per_1k,
+                "cached_per_1k": row.cached_per_1k,
+            }
+            for row in rows
+        ]
+    finally:
+        db.close()
+    return merge_pricing(items)
 
 
 def _cacheable_request(payload: ChatRequest) -> bool:
@@ -282,7 +352,15 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
             prompt_tokens = int(cache_entry.get("prompt_tokens") or 0)
             completion_tokens = int(cache_entry.get("completion_tokens") or 0)
             total_tokens = int(cache_entry.get("total_tokens") or 0)
-            cost_value = float(cache_entry.get("cost_usd") or 0.0)
+            cached_tokens = total_tokens
+            pricing_map = _get_pricing_map()
+            cost_value = cost_usd(
+                model_name,
+                prompt_tokens,
+                completion_tokens,
+                cached_tokens,
+                pricing_map=pricing_map,
+            )
             used_provider = "cache"
             route_reason = "cache_hit"
         else:
@@ -307,7 +385,14 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
             prompt_tokens = result.prompt_tokens
             completion_tokens = result.completion_tokens
             total_tokens = result.total_tokens
-            cost_value = cost_usd(model_name, total_tokens)
+            pricing_map = _get_pricing_map()
+            cost_value = cost_usd(
+                model_name,
+                prompt_tokens,
+                completion_tokens,
+                0,
+                pricing_map=pricing_map,
+            )
             if cache_key and cache_status == "miss":
                 cache_payload = {
                     "response": response_obj.model_dump(),
@@ -578,7 +663,14 @@ async def chat_stream(payload: ChatRequest, request: Request):
                     req_row.prompt_tokens = prompt_tokens
                     req_row.completion_tokens = completion_tokens
                     req_row.total_tokens = total_tokens
-                    req_row.cost_usd = cost_usd(req_row.model, total_tokens)
+                    pricing_map = _get_pricing_map()
+                    req_row.cost_usd = cost_usd(
+                        req_row.model,
+                        prompt_tokens,
+                        completion_tokens,
+                        0,
+                        pricing_map=pricing_map,
+                    )
                     req_row.completed_at = func.now()
                     db.add(req_row)
                     usage = UsageEvent(
@@ -623,24 +715,126 @@ async def create_key(payload: CreateKeyRequest, request: Request):
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
         return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
 
+    requested_name = payload.name or payload.tenant
+    if not requested_name:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"code": "invalid_request", "message": "Name is required"}},
+        )
+
     raw_key = str(uuid.uuid4())
     key_hash = hash_api_key(raw_key)
 
     db = get_session()
     try:
-        tenant = db.query(Tenant).filter(Tenant.name == payload.tenant).one_or_none()
+        tenant = db.query(Tenant).filter(Tenant.name == requested_name).one_or_none()
         if tenant is None:
-            tenant = Tenant(name=payload.tenant)
+            tenant = Tenant(name=requested_name)
             db.add(tenant)
             db.commit()
             db.refresh(tenant)
 
-        db.add(ApiKey(tenant_id=tenant.id, key_hash=key_hash, active=True))
+        db.add(ApiKey(tenant_id=tenant.id, name=requested_name, key_hash=key_hash, active=True))
         db.commit()
     finally:
         db.close()
 
-    return CreateKeyResponse(tenant=payload.tenant, api_key=raw_key)
+    return CreateKeyResponse(tenant=requested_name, api_key=raw_key)
+
+@app.post("/v1/admin/bootstrap")
+async def bootstrap_admin():
+    if _admin_key_exists():
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin already initialized"}},
+        )
+
+    raw_key = str(uuid.uuid4())
+    key_hash = hash_api_key(raw_key)
+    db = get_session()
+    try:
+        admin_tenant = db.query(Tenant).filter(Tenant.name == "admin").one_or_none()
+        if admin_tenant is None:
+            admin_tenant = Tenant(name="admin")
+            db.add(admin_tenant)
+            db.commit()
+            db.refresh(admin_tenant)
+        db.add(ApiKey(tenant_id=admin_tenant.id, name="admin", key_hash=key_hash, active=True))
+        db.commit()
+    finally:
+        db.close()
+
+    return {"api_key": raw_key}
+
+@app.get("/v1/admin/keys", response_model=ApiKeyListResponse)
+async def list_keys(request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        rows = (
+            db.query(ApiKey, Tenant)
+            .join(Tenant, Tenant.id == ApiKey.tenant_id)
+            .order_by(ApiKey.created_at.desc())
+            .all()
+        )
+        keys = [
+            {
+                "id": str(key.id),
+                "name": key.name,
+                "tenant": tenant.name,
+                "active": bool(key.active),
+                "created_at": key.created_at.isoformat(),
+            }
+            for key, tenant in rows
+        ]
+    finally:
+        db.close()
+
+    return ApiKeyListResponse(keys=keys)
+
+
+@app.delete("/v1/admin/keys/{key_id}")
+async def delete_key(key_id: str, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        try:
+            key_uuid = uuid.UUID(key_id)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "invalid_request", "message": "Invalid key id"}},
+            )
+        key = db.query(ApiKey).filter(ApiKey.id == key_uuid).one_or_none()
+        if key is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Key not found"}},
+            )
+        key.active = False
+        db.add(key)
+        db.commit()
+    finally:
+        db.close()
+
+    return {"status": "ok"}
+
+@app.post("/v1/admin/rotate")
+async def rotate_admin():
+    allow_reset = os.getenv("ALLOW_ADMIN_RESET", "false").lower() in ("1", "true", "yes")
+    if not allow_reset:
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin reset disabled"}},
+        )
+    raw_key = _rotate_admin_key()
+    return {"api_key": raw_key}
 
 
 @app.post("/v1/admin/limits", response_model=LimitsResponse)
@@ -696,13 +890,18 @@ async def usage_summary(tenant_name: str, request: Request):
                 content={"error": {"code": "not_found", "message": "Tenant not found"}},
             )
 
-        request_count = db.query(func.count(RequestModel.id)).filter(RequestModel.tenant_id == tenant.id).scalar()
+        request_count = (
+            db.query(func.count(RequestModel.id))
+            .filter(RequestModel.tenant_id == tenant.id)
+            .scalar()
+        )
         totals = (
             db.query(
-                func.coalesce(func.sum(UsageEvent.tokens), 0),
-                func.coalesce(func.sum(UsageEvent.cost_usd), 0.0),
+                func.coalesce(func.sum(RequestModel.total_tokens), 0),
+                func.coalesce(func.sum(RequestModel.cost_usd), 0.0),
             )
-            .filter(UsageEvent.tenant_id == tenant.id)
+            .filter(RequestModel.tenant_id == tenant.id)
+            .filter(RequestModel.status == "completed")
             .one()
         )
     finally:
@@ -715,9 +914,138 @@ async def usage_summary(tenant_name: str, request: Request):
         cost_usd=float(totals[1] or 0.0),
     )
 
+
+async def _prom_query(query: str) -> float:
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{PROMETHEUS_URL}/api/v1/query", params={"query": query})
+        resp.raise_for_status()
+        payload = resp.json()
+    result = payload.get("data", {}).get("result", [])
+    if not result:
+        return 0.0
+    value = result[0].get("value")
+    if not value or len(value) < 2:
+        return 0.0
+    try:
+        return float(value[1])
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@app.get("/v1/observability/summary", response_model=ObservabilitySummaryResponse)
+async def observability_summary(request: Request):
+    tenant_name = request.query_params.get("tenant")
+    scope = "tenant" if tenant_name else "global"
+
+    if tenant_name:
+        request_rate = await _prom_query(
+            f'sum(rate(tenant_requests_total{{tenant="{tenant_name}"}}[5m]))'
+        )
+        error_ratio = 0.0
+        p95_latency = 0.0
+        cache_hits = await _prom_query(
+            f'sum(rate(cache_hits_total{{tenant="{tenant_name}"}}[5m]))'
+        )
+        cache_misses = await _prom_query(
+            f'sum(rate(cache_misses_total{{tenant="{tenant_name}"}}[5m]))'
+        )
+        rate_limited = await _prom_query('sum(rate(rate_limited_total[5m]))')
+        tokens_total = await _prom_query(
+            f'sum(tenant_tokens_total{{tenant="{tenant_name}"}})'
+        )
+        cost_total = await _prom_query(
+            f'sum(tenant_cost_total{{tenant="{tenant_name}"}})'
+        )
+    else:
+        request_rate = await _prom_query('sum(rate(http_requests_total[5m]))')
+        error_rate = await _prom_query(
+            'sum(rate(http_requests_total{status_code=~"4..|5.."}[5m]))'
+        )
+        total_rate = await _prom_query('sum(rate(http_requests_total[5m]))')
+        error_ratio = (error_rate / total_rate) if total_rate > 0 else 0.0
+        p95_latency = await _prom_query(
+            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
+        )
+        cache_hits = await _prom_query('sum(rate(cache_hits_total[5m]))')
+        cache_misses = await _prom_query('sum(rate(cache_misses_total[5m]))')
+        rate_limited = await _prom_query('sum(rate(rate_limited_total[5m]))')
+        tokens_total = await _prom_query('sum(tokens_total)')
+        cost_total = await _prom_query('sum(cost_total)')
+    cache_total = cache_hits + cache_misses
+    cache_hit_rate = (cache_hits / cache_total) if cache_total > 0 else 0.0
+
+    return ObservabilitySummaryResponse(
+        request_rate_per_s=request_rate,
+        error_rate=error_ratio,
+        p95_latency_ms=p95_latency * 1000,
+        cache_hit_rate=cache_hit_rate,
+        rate_limited_per_s=rate_limited,
+        tokens_total=tokens_total,
+        cost_total=cost_total,
+        scope=scope,
+        tenant=tenant_name,
+    )
+
+
+@app.get("/v1/admin/pricing", response_model=PricingResponse)
+async def get_pricing(request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        rows = db.query(Pricing).order_by(Pricing.model.asc()).all()
+        items = [
+            PricingItem(
+                model=row.model,
+                input_per_1k=float(row.input_per_1k),
+                output_per_1k=float(row.output_per_1k),
+                cached_per_1k=float(row.cached_per_1k),
+            )
+            for row in rows
+        ]
+    finally:
+        db.close()
+
+    return PricingResponse(items=items)
+
+
+@app.put("/v1/admin/pricing", response_model=PricingResponse)
+async def set_pricing(payload: PricingResponse, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        for item in payload.items:
+            existing = db.query(Pricing).filter(Pricing.model == item.model).one_or_none()
+            if existing is None:
+                db.add(
+                    Pricing(
+                        model=item.model,
+                        input_per_1k=item.input_per_1k,
+                        output_per_1k=item.output_per_1k,
+                        cached_per_1k=item.cached_per_1k,
+                    )
+                )
+            else:
+                existing.input_per_1k = item.input_per_1k
+                existing.output_per_1k = item.output_per_1k
+                existing.cached_per_1k = item.cached_per_1k
+                db.add(existing)
+        db.commit()
+    finally:
+        db.close()
+
+    return payload
+
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics", "/health/ollama"}:
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if request.url.path in {"/health", "/metrics", "/health/ollama", "/v1/admin/bootstrap", "/v1/admin/rotate"}:
         return await call_next(request)
 
     raw_key = None
@@ -746,6 +1074,8 @@ async def api_key_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def rate_limit_requests(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
     if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
@@ -792,6 +1122,8 @@ async def rate_limit_requests(request: Request, call_next):
 
 @app.middleware("http")
 async def quota_limits(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
     if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
