@@ -211,6 +211,29 @@
         <p class="muted">Stored locally for convenience. Clear the session to remove them.</p>
         <div class="key-list" id="key-list"></div>
       </section>
+
+      <section class="panel">
+        <h2>Audit Log</h2>
+        <p class="muted">Recent privileged actions for traceability.</p>
+        <div class="row">
+          <button class="ghost" id="load-audit">Refresh Audit Log</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>Metadata</th>
+              </tr>
+            </thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+        <div class="status" id="audit-status"></div>
+      </section>
     </main>
 
     <footer class="site-footer">
