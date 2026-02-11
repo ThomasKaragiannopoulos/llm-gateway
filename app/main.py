@@ -46,6 +46,8 @@ from app.schemas import (
     LimitsRequest,
     LimitsResponse,
     UsageSummaryResponse,
+    UiKeysTelemetryRequest,
+    AdminStatusResponse,
 )
 
 app = FastAPI(title="llm-gateway")
@@ -205,6 +207,18 @@ def ensure_admin_key():
         if existing is None:
             db.add(ApiKey(tenant_id=admin_tenant.id, key_hash=key_hash, active=True))
             db.commit()
+        total_keys = db.query(ApiKey).count()
+        active_keys = db.query(ApiKey).filter(ApiKey.active.is_(True)).count()
+        logger.info(
+            json.dumps(
+                {
+                    "message": "api_keys_count",
+                    "sql_total": int(total_keys),
+                    "sql_active": int(active_keys),
+                },
+                separators=(",", ":"),
+            )
+        )
     finally:
         db.close()
 
@@ -741,6 +755,45 @@ async def create_key(payload: CreateKeyRequest, request: Request):
 
     return CreateKeyResponse(tenant=requested_name, api_key=raw_key)
 
+
+@app.post("/v1/ui/keys/telemetry")
+async def ui_keys_telemetry(payload: UiKeysTelemetryRequest, request: Request):
+    db = get_session()
+    try:
+        total_keys = db.query(ApiKey).count()
+        active_keys = db.query(ApiKey).filter(ApiKey.active.is_(True)).count()
+    finally:
+        db.close()
+    logger.info(
+        json.dumps(
+            {
+                "message": "ui_keys_telemetry",
+                "displayed_count": payload.displayed_count,
+                "sql_total": int(total_keys),
+                "sql_active": int(active_keys),
+            },
+            separators=(",", ":"),
+        )
+    )
+    return {"status": "ok"}
+
+
+@app.get("/v1/admin/status", response_model=AdminStatusResponse)
+async def admin_status():
+    db = get_session()
+    try:
+        admin_tenant = db.query(Tenant).filter(Tenant.name == "admin").one_or_none()
+        if admin_tenant is None:
+            return AdminStatusResponse(admin_initialized=False)
+        has_key = (
+            db.query(ApiKey)
+            .filter(ApiKey.tenant_id == admin_tenant.id, ApiKey.active.is_(True))
+            .first()
+        )
+        return AdminStatusResponse(admin_initialized=has_key is not None)
+    finally:
+        db.close()
+
 @app.post("/v1/admin/bootstrap")
 async def bootstrap_admin():
     if _admin_key_exists():
@@ -1022,7 +1075,14 @@ async def set_pricing(payload: PricingResponse, request: Request):
 async def api_key_auth(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
-    if request.url.path in {"/health", "/metrics", "/health/ollama", "/v1/admin/bootstrap", "/v1/admin/rotate"}:
+    if request.url.path in {
+        "/health",
+        "/metrics",
+        "/health/ollama",
+        "/v1/admin/bootstrap",
+        "/v1/admin/rotate",
+        "/v1/admin/status",
+    }:
         return await call_next(request)
 
     raw_key = None
