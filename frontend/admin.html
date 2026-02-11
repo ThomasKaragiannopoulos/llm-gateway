@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Gateway Admin Panel</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark">LG</div>
+        <div class="brand-text">
+          <div class="brand-title">Admin Panel</div>
+          <div class="brand-subtitle">Keys, lifecycle, and governance</div>
+        </div>
+      </div>
+      <div class="env-pill" id="env-pill">Disconnected</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel hero">
+        <div class="hero-top">
+          <div>
+            <div class="eyebrow">Admin Controls</div>
+            <h2>Privileged Operational Surface</h2>
+          </div>
+          <div class="pill">Admin only</div>
+        </div>
+        <p class="muted">
+          Manage tenant lifecycle, issue and revoke keys, and rotate admin credentials. Actions
+          here should be audited and treated as privileged.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Admin Session</h2>
+        <p class="muted">
+          Use the admin key to unlock tenant operations. Stored locally in your browser only.
+        </p>
+        <label class="field">
+          <span>Gateway Base URL</span>
+          <input id="base-url" type="text" placeholder="http://localhost:8000" />
+        </label>
+        <label class="field">
+          <span>Admin API Key</span>
+          <input id="admin-key" type="password" placeholder="sk-admin-..." />
+        </label>
+        <div class="row">
+          <button class="primary" id="save-settings">Save &amp; Check</button>
+          <button class="ghost" id="clear-settings">Clear</button>
+        </div>
+        <div class="status" id="session-status"></div>
+        <div class="health-inline" id="health-inline">
+          <span class="health-chip" id="health-chip">Status: --</span>
+        </div>
+        <div class="callout">
+          Key hygiene: rotate admin keys periodically. Never paste production keys into shared browsers.
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Tenant Lifecycle</h2>
+        <p class="muted">Create tenants explicitly, then issue keys as needed.</p>
+        <div class="stack">
+          <div class="stack-block">
+            <div class="stack-title">Create Tenant</div>
+            <label class="field">
+              <span>Tenant Name</span>
+              <input id="tenant-name" type="text" placeholder="acme-labs" />
+            </label>
+            <label class="field">
+              <span>Tier</span>
+              <input id="tenant-tier" type="text" placeholder="free" />
+            </label>
+            <div class="row">
+              <button class="primary" id="create-tenant">Create Tenant</button>
+            </div>
+            <div class="status" id="tenant-status"></div>
+          </div>
+          <div class="stack-block">
+            <div class="stack-title">Create API Key</div>
+            <p class="muted">Tenant must already exist.</p>
+            <label class="field">
+              <span>Tenant Name</span>
+              <input id="key-tenant" type="text" placeholder="acme-labs" />
+            </label>
+            <label class="field">
+              <span>Key Name</span>
+              <input id="key-name" type="text" placeholder="prod-default" />
+            </label>
+            <div class="row">
+              <button class="primary" id="create-key">Generate Key</button>
+              <button class="ghost" id="copy-latest" disabled>Copy Latest</button>
+            </div>
+            <div class="key-card" id="key-result">
+              <div class="key-title">New Key</div>
+              <div class="key-value" id="key-value">No key generated yet.</div>
+            </div>
+          </div>
+          <div class="stack-block">
+            <div class="stack-title">List Tenant Keys</div>
+            <label class="field">
+              <span>Tenant Name</span>
+              <input id="list-tenant" type="text" placeholder="acme-labs" />
+            </label>
+            <div class="row">
+              <button class="ghost" id="list-keys">Load Keys</button>
+            </div>
+            <div class="key-list" id="tenant-keys"></div>
+            <div class="status" id="keys-status"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Key Rotation &amp; Revocation</h2>
+        <p class="muted">Operational key hygiene for admin and tenant keys.</p>
+        <div class="stack">
+          <div class="stack-block">
+            <div class="stack-title">Rotate Admin Key</div>
+            <p class="muted">
+              Generates a new admin key and deactivates existing admin keys. Update
+              <span class="mono">ADMIN_API_KEY</span> and restart to persist.
+            </p>
+            <div class="row">
+              <button class="primary" id="rotate-admin">Rotate Admin Key</button>
+              <button class="ghost" id="copy-admin" disabled>Copy New</button>
+            </div>
+            <div class="key-card">
+              <div class="key-title">New Admin Key</div>
+              <div class="key-value" id="admin-key-value">No rotation yet.</div>
+            </div>
+          </div>
+          <div class="stack-block">
+            <div class="stack-title">Revoke Tenant Key</div>
+            <p class="muted">Deactivate a tenant API key immediately.</p>
+            <label class="field">
+              <span>Tenant Name</span>
+              <input id="revoke-tenant" type="text" placeholder="acme-labs" />
+            </label>
+            <label class="field">
+              <span>Key Name</span>
+              <input id="revoke-key-name" type="text" placeholder="prod-default" />
+            </label>
+            <label class="field">
+              <span>Reason (optional)</span>
+              <input id="revoke-reason" type="text" placeholder="compromised / rotated / unused" />
+            </label>
+            <div class="row">
+              <button class="ghost" id="revoke-key-btn">Revoke Key</button>
+            </div>
+            <div class="status" id="revoke-status"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Tenant Limits</h2>
+        <p class="muted">Update per-day quotas. Leave blank to keep existing limits.</p>
+        <label class="field">
+          <span>Tenant Name</span>
+          <input id="limits-tenant" type="text" placeholder="acme-labs" />
+        </label>
+        <div class="grid-2">
+          <label class="field">
+            <span>Token Limit / Day</span>
+            <input id="token-limit" type="number" min="1" placeholder="500000" />
+          </label>
+          <label class="field">
+            <span>Spend Limit / Day (USD)</span>
+            <input id="spend-limit" type="number" min="0" step="0.01" placeholder="25.00" />
+          </label>
+        </div>
+        <div class="row">
+          <button class="primary" id="set-limits">Apply Limits</button>
+        </div>
+        <div class="status" id="limits-status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Usage Snapshot</h2>
+        <p class="muted">Query aggregate usage for a tenant.</p>
+        <label class="field">
+          <span>Tenant Name</span>
+          <input id="usage-tenant" type="text" placeholder="acme-labs" />
+        </label>
+        <div class="row">
+          <button class="primary" id="fetch-usage">Fetch Usage</button>
+        </div>
+        <div class="usage-card" id="usage-card">
+          <div>
+            <div class="usage-label">Requests</div>
+            <div class="usage-value" id="usage-requests">--</div>
+          </div>
+          <div>
+            <div class="usage-label">Tokens</div>
+            <div class="usage-value" id="usage-tokens">--</div>
+          </div>
+          <div>
+            <div class="usage-label">Spend (USD)</div>
+            <div class="usage-value" id="usage-cost">--</div>
+          </div>
+        </div>
+        <div class="status" id="usage-status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent Keys</h2>
+        <p class="muted">Stored locally for convenience. Clear the session to remove them.</p>
+        <div class="key-list" id="key-list"></div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>LLM Gateway - Admin Console</div>
+      <div>Designed as a senior AI systems portfolio artifact.</div>
+    </footer>
+
+    <script src="/static/shared.js"></script>
+    <script src="/static/admin.js"></script>
+  </body>
+</html>

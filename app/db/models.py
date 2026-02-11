@@ -17,20 +17,32 @@ class Tenant(Base):
     token_limit_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     spend_limit_per_day_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="tenant")
+    api_keys: Mapped[list["ApiKey"]] = relationship(
+        back_populates="tenant",
+        foreign_keys="ApiKey.tenant_id",
+    )
     requests: Mapped[list["Request"]] = relationship(back_populates="tenant")
 
 
 class ApiKey(Base):
     __tablename__ = "api_keys"
+    __table_args__ = (Index("uq_api_keys_tenant_name", "tenant_id", "name", unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    last_used_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
-    tenant: Mapped["Tenant"] = relationship(back_populates="api_keys")
+    tenant: Mapped["Tenant"] = relationship(
+        back_populates="api_keys",
+        foreign_keys=[tenant_id],
+    )
 
 
 class Request(Base):
@@ -74,3 +86,19 @@ class UsageEvent(Base):
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     request: Mapped["Request"] = relationship(back_populates="usage_events")
+
+
+class AdminAction(Base):
+    __tablename__ = "admin_actions"
+    __table_args__ = (
+        Index("ix_admin_actions_actor", "actor_tenant_id"),
+        Index("ix_admin_actions_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    actor_tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())

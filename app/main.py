@@ -8,9 +8,11 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 import httpx
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from redis.asyncio import Redis
@@ -25,7 +27,7 @@ logger.propagate = False
 
 from app.db.models import Request as RequestModel
 from app.auth import hash_api_key
-from app.db.models import ApiKey, Tenant, UsageEvent
+from app.db.models import AdminAction, ApiKey, Tenant, UsageEvent
 from app.db.session import get_session
 from app.mock_provider import MockProvider
 from app.ollama_provider import OllamaProvider
@@ -37,12 +39,26 @@ from app.schemas import (
     ChatResponse,
     CreateKeyRequest,
     CreateKeyResponse,
+    CreateTenantKeyRequest,
+    CreateTenantRequest,
+    CreateTenantResponse,
+    ListTenantKeysResponse,
+    ListTenantsResponse,
+    RevokeKeyByNameRequest,
+    RevokeKeyRequest,
+    RevokeKeyResponse,
     LimitsRequest,
     LimitsResponse,
+    TenantKeyInfo,
+    TenantSummary,
+    RotateAdminKeyResponse,
     UsageSummaryResponse,
 )
 
 app = FastAPI(title="llm-gateway")
+frontend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
+if os.path.isdir(frontend_root):
+    app.mount("/static", StaticFiles(directory=frontend_root, html=False), name="frontend-static")
 PRIMARY_FAIL_RATE = float(os.getenv("PRIMARY_FAIL_RATE", "0"))
 FALLBACK_FAIL_RATE = float(os.getenv("FALLBACK_FAIL_RATE", "0"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -137,6 +153,30 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/")
+def frontend_index():
+    index_path = os.path.join(frontend_root, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+
+@app.get("/admin")
+def frontend_admin():
+    admin_path = os.path.join(frontend_root, "admin.html")
+    if os.path.isfile(admin_path):
+        return FileResponse(admin_path)
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+
+@app.get("/tenants")
+def frontend_tenants():
+    tenants_path = os.path.join(frontend_root, "tenants.html")
+    if os.path.isfile(tenants_path):
+        return FileResponse(tenants_path)
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+
 @app.get("/metrics")
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
@@ -186,8 +226,27 @@ def ensure_admin_key():
         key_hash = hash_api_key(admin_key)
         existing = db.query(ApiKey).filter(ApiKey.key_hash == key_hash).one_or_none()
         if existing is None:
-            db.add(ApiKey(tenant_id=admin_tenant.id, key_hash=key_hash, active=True))
-            db.commit()
+            named = (
+                db.query(ApiKey)
+                .filter(ApiKey.tenant_id == admin_tenant.id, ApiKey.name == "admin-env")
+                .one_or_none()
+            )
+            active_admin_keys = (
+                db.query(ApiKey)
+                .filter(ApiKey.tenant_id == admin_tenant.id, ApiKey.active.is_(True))
+                .count()
+            )
+            if named is None:
+                db.add(ApiKey(tenant_id=admin_tenant.id, name="admin-env", key_hash=key_hash, active=True))
+                db.commit()
+            else:
+                if active_admin_keys > 0 and named.key_hash != key_hash:
+                    logger.warning(json.dumps({"message": "admin_key_env_mismatch"}))
+                else:
+                    named.key_hash = key_hash
+                    named.active = True
+                    db.add(named)
+                    db.commit()
     finally:
         db.close()
 
@@ -630,18 +689,333 @@ async def create_key(payload: CreateKeyRequest, request: Request):
     try:
         tenant = db.query(Tenant).filter(Tenant.name == payload.tenant).one_or_none()
         if tenant is None:
-            tenant = Tenant(name=payload.tenant)
-            db.add(tenant)
-            db.commit()
-            db.refresh(tenant)
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Tenant not found"}},
+            )
 
-        db.add(ApiKey(tenant_id=tenant.id, key_hash=key_hash, active=True))
+        existing = (
+            db.query(ApiKey)
+            .filter(ApiKey.tenant_id == tenant.id, ApiKey.name == payload.name)
+            .one_or_none()
+        )
+        if existing is not None:
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "conflict", "message": "Key name already exists"}},
+            )
+
+        db.add(
+            ApiKey(
+                tenant_id=tenant.id,
+                name=payload.name,
+                key_hash=key_hash,
+                active=True,
+                created_by=request.state.tenant_id,
+            )
+        )
+        _log_admin_action(
+            db,
+            request.state.tenant_id,
+            "create_key",
+            "tenant",
+            str(tenant.id),
+            {"tenant": payload.tenant, "name": payload.name},
+        )
         db.commit()
     finally:
         db.close()
 
-    return CreateKeyResponse(tenant=payload.tenant, api_key=raw_key)
 
+def _log_admin_action(
+    db,
+    actor_tenant_id: str | None,
+    action: str,
+    target_type: str,
+    target_id: str | None,
+    metadata: dict | None = None,
+):
+    if not actor_tenant_id:
+        return
+    payload = json.dumps(metadata or {}, separators=(",", ":")) if metadata else None
+    db.add(
+        AdminAction(
+            actor_tenant_id=actor_tenant_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            metadata_json=payload,
+        )
+    )
+
+
+@app.post("/v1/admin/tenants", response_model=CreateTenantResponse)
+async def create_tenant(payload: CreateTenantRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        existing = db.query(Tenant).filter(Tenant.name == payload.tenant).one_or_none()
+        if existing is not None:
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "conflict", "message": "Tenant already exists"}},
+            )
+        tier = payload.tier or "free"
+        tenant = Tenant(name=payload.tenant, tier=tier)
+        db.add(tenant)
+        _log_admin_action(
+            db,
+            request.state.tenant_id,
+            "create_tenant",
+            "tenant",
+            None,
+            {"tenant": payload.tenant, "tier": tier},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return CreateTenantResponse(tenant=payload.tenant, tier=tier)
+
+
+@app.get("/v1/admin/tenants", response_model=ListTenantsResponse)
+async def list_tenants(request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        tenants = db.query(Tenant).order_by(Tenant.created_at.desc()).all()
+    finally:
+        db.close()
+
+    rows = [
+        TenantSummary(
+            tenant=t.name,
+            tier=t.tier,
+            created_at=t.created_at.isoformat() if t.created_at else "",
+            token_limit_per_day=t.token_limit_per_day,
+            spend_limit_per_day_usd=t.spend_limit_per_day_usd,
+        )
+        for t in tenants
+    ]
+    return ListTenantsResponse(tenants=rows)
+
+
+@app.post("/v1/admin/tenants/{tenant_name}/keys", response_model=CreateKeyResponse)
+async def create_tenant_key(tenant_name: str, payload: CreateTenantKeyRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    raw_key = str(uuid.uuid4())
+    key_hash = hash_api_key(raw_key)
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.name == tenant_name).one_or_none()
+        if tenant is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Tenant not found"}},
+            )
+        existing = (
+            db.query(ApiKey)
+            .filter(ApiKey.tenant_id == tenant.id, ApiKey.name == payload.name)
+            .one_or_none()
+        )
+        if existing is not None:
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "conflict", "message": "Key name already exists"}},
+            )
+        db.add(
+            ApiKey(
+                tenant_id=tenant.id,
+                name=payload.name,
+                key_hash=key_hash,
+                active=True,
+                created_by=request.state.tenant_id,
+            )
+        )
+        _log_admin_action(
+            db,
+            request.state.tenant_id,
+            "create_key",
+            "tenant",
+            str(tenant.id),
+            {"tenant": tenant_name, "name": payload.name},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return CreateKeyResponse(tenant=tenant_name, name=payload.name, api_key=raw_key)
+
+
+@app.get("/v1/admin/tenants/{tenant_name}/keys", response_model=ListTenantKeysResponse)
+async def list_tenant_keys(tenant_name: str, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.name == tenant_name).one_or_none()
+        if tenant is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Tenant not found"}},
+            )
+        keys = (
+            db.query(ApiKey)
+            .filter(ApiKey.tenant_id == tenant.id)
+            .order_by(ApiKey.created_at.desc())
+            .all()
+        )
+    finally:
+        db.close()
+
+    masked = [
+        TenantKeyInfo(
+            key_id=str(k.id),
+            name=k.name,
+            key_last6=k.key_hash[-6:],
+            active=bool(k.active),
+            created_at=k.created_at.isoformat() if k.created_at else "",
+            last_used_at=k.last_used_at.isoformat() if k.last_used_at else None,
+            revoked_at=k.revoked_at.isoformat() if k.revoked_at else None,
+            revoked_reason=k.revoked_reason,
+        )
+        for k in keys
+    ]
+    return ListTenantKeysResponse(tenant=tenant_name, keys=masked)
+
+
+@app.post("/v1/admin/keys/revoke", response_model=RevokeKeyResponse)
+async def revoke_key(payload: RevokeKeyRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    key_hash = hash_api_key(payload.api_key)
+    db = get_session()
+    try:
+        api_key = db.query(ApiKey).filter(ApiKey.key_hash == key_hash, ApiKey.active.is_(True)).one_or_none()
+        if api_key is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "API key not found"}},
+            )
+        api_key.active = False
+        api_key.revoked_at = func.now()
+        api_key.revoked_reason = payload.reason
+        tenant = db.query(Tenant).filter(Tenant.id == api_key.tenant_id).one_or_none()
+        db.add(api_key)
+        _log_admin_action(
+            db,
+            request.state.tenant_id,
+            "revoke_key",
+            "api_key",
+            str(api_key.id),
+            {"tenant": tenant.name if tenant else None, "reason": payload.reason},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return RevokeKeyResponse(revoked=True, tenant=(tenant.name if tenant else None))
+
+
+@app.post("/v1/admin/tenants/{tenant_name}/keys/revoke", response_model=RevokeKeyResponse)
+async def revoke_key_by_name(tenant_name: str, payload: RevokeKeyByNameRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.name == tenant_name).one_or_none()
+        if tenant is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Tenant not found"}},
+            )
+        api_key = (
+            db.query(ApiKey)
+            .filter(ApiKey.tenant_id == tenant.id, ApiKey.name == payload.name, ApiKey.active.is_(True))
+            .one_or_none()
+        )
+        if api_key is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "API key not found"}},
+            )
+        api_key.active = False
+        api_key.revoked_at = func.now()
+        api_key.revoked_reason = payload.reason
+        db.add(api_key)
+        _log_admin_action(
+            db,
+            request.state.tenant_id,
+            "revoke_key_by_name",
+            "api_key",
+            str(api_key.id),
+            {"tenant": tenant_name, "name": payload.name, "reason": payload.reason},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return RevokeKeyResponse(revoked=True, tenant=tenant_name)
+
+
+@app.post("/v1/admin/keys/rotate", response_model=RotateAdminKeyResponse)
+async def rotate_admin_key(request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    raw_key = str(uuid.uuid4())
+    key_hash = hash_api_key(raw_key)
+    db = get_session()
+    try:
+        admin_tenant = db.query(Tenant).filter(Tenant.id == admin_id).one_or_none()
+        if admin_tenant is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Admin tenant missing"}},
+            )
+
+        db.query(ApiKey).filter(ApiKey.tenant_id == admin_tenant.id, ApiKey.active.is_(True)).update(
+            {"active": False}
+        )
+        rotation_name = f"admin-rotated-{raw_key.split('-')[0]}"
+        db.add(
+            ApiKey(
+                tenant_id=admin_tenant.id,
+                name=rotation_name,
+                key_hash=key_hash,
+                active=True,
+                created_by=request.state.tenant_id,
+            )
+        )
+        _log_admin_action(
+            db,
+            request.state.tenant_id,
+            "rotate_admin_key",
+            "tenant",
+            str(admin_tenant.id),
+            {"name": rotation_name},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return RotateAdminKeyResponse(admin_api_key=raw_key)
 
 @app.post("/v1/admin/limits", response_model=LimitsResponse)
 async def set_limits(payload: LimitsRequest, request: Request):
@@ -661,6 +1035,18 @@ async def set_limits(payload: LimitsRequest, request: Request):
         tenant.token_limit_per_day = payload.token_limit_per_day
         tenant.spend_limit_per_day_usd = payload.spend_limit_per_day_usd
         db.add(tenant)
+        _log_admin_action(
+            db,
+            request.state.tenant_id,
+            "set_limits",
+            "tenant",
+            str(tenant.id),
+            {
+                "tenant": payload.tenant,
+                "token_limit_per_day": payload.token_limit_per_day,
+                "spend_limit_per_day_usd": payload.spend_limit_per_day_usd,
+            },
+        )
         db.commit()
     finally:
         db.close()
@@ -719,6 +1105,8 @@ async def usage_summary(tenant_name: str, request: Request):
 async def api_key_auth(request: Request, call_next):
     if request.url.path in {"/health", "/metrics", "/health/ollama"}:
         return await call_next(request)
+    if request.url.path in {"/", "/admin", "/tenants"} or request.url.path.startswith("/static"):
+        return await call_next(request)
 
     raw_key = None
     auth_header = request.headers.get("Authorization")
@@ -733,14 +1121,21 @@ async def api_key_auth(request: Request, call_next):
     key_hash = hash_api_key(raw_key)
     db = get_session()
     try:
-        api_key = db.query(ApiKey).filter(ApiKey.key_hash == key_hash, ApiKey.active.is_(True)).one_or_none()
+        api_key_row = (
+            db.query(ApiKey.id, ApiKey.tenant_id)
+            .filter(ApiKey.key_hash == key_hash, ApiKey.active.is_(True))
+            .one_or_none()
+        )
+        if api_key_row is not None:
+            db.query(ApiKey).filter(ApiKey.id == api_key_row.id).update({"last_used_at": func.now()})
+            db.commit()
     finally:
         db.close()
 
-    if api_key is None:
+    if api_key_row is None:
         return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Invalid API key"}})
 
-    request.state.tenant_id = api_key.tenant_id
+    request.state.tenant_id = api_key_row.tenant_id
     return await call_next(request)
 
 

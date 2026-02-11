@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Gateway Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark">LG</div>
+        <div class="brand-text">
+          <div class="brand-title">LLM Gateway Console</div>
+          <div class="brand-subtitle">Multi-tenant control plane - rate limits - usage governance</div>
+        </div>
+      </div>
+      <div class="env-pill">Landing</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel hero">
+        <div class="hero-top">
+          <div>
+            <div class="eyebrow">System Overview</div>
+            <h2>Operational Surface for LLM Traffic</h2>
+          </div>
+          <div class="pill">Senior-grade ops</div>
+        </div>
+        <p class="muted">
+          Tenant isolation, quota governance, and key hygiene. Split into admin controls and a
+          tenant explorer to keep the control plane clean and auditable.
+        </p>
+        <div class="hero-grid">
+          <div class="hero-card">
+            <div class="hero-label">Admin Panel</div>
+            <div class="hero-value">Keys, rotation, lifecycle</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">Tenant Explorer</div>
+            <div class="hero-value">SQL-style view + drilldown</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">Telemetry</div>
+            <div class="hero-value">Usage + cost traces</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Admin Panel</h2>
+        <p class="muted">Privileged controls for tenant lifecycle, keys, and governance.</p>
+        <div class="row">
+          <a class="primary button-link" href="/admin">Open Admin Panel</a>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Tenant Explorer</h2>
+        <p class="muted">SQL-style tenant viewer with drill-down usage and key management.</p>
+        <div class="row">
+          <a class="primary button-link" href="/tenants">Open Tenant Explorer</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>LLM Gateway - Admin Console</div>
+      <div>Designed as a senior AI systems portfolio artifact.</div>
+    </footer>
+  </body>
+</html>

@@ -5,6 +5,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      ADMIN_API_KEY: AdminKey
       PROVIDER_MODE: ollama
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: tinyllama:latest
