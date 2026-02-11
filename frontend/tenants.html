@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Gateway Tenant Explorer</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark">LG</div>
+        <div class="brand-text">
+          <div class="brand-title">Tenant Explorer</div>
+          <div class="brand-subtitle">SQL-style viewer with drill-down details</div>
+        </div>
+      </div>
+      <div class="env-pill" id="env-pill">Disconnected</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel hero">
+        <div class="hero-top">
+          <div>
+            <div class="eyebrow">Tenant Observability</div>
+            <h2>Inventory and Usage Drilldown</h2>
+          </div>
+          <div class="pill">Explorer</div>
+        </div>
+        <p class="muted">
+          Browse tenants, inspect limits, and drill into usage and keys. Designed for fast
+          operational investigations and audits.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Admin Session</h2>
+        <p class="muted">
+          Provide admin credentials to access tenant inventory. Stored locally in your browser only.
+        </p>
+        <label class="field">
+          <span>Gateway Base URL</span>
+          <input id="base-url" type="text" placeholder="http://localhost:8000" />
+        </label>
+        <label class="field">
+          <span>Admin API Key</span>
+          <input id="admin-key" type="password" placeholder="sk-admin-..." />
+        </label>
+        <div class="row">
+          <button class="primary" id="save-settings">Save &amp; Check</button>
+          <button class="ghost" id="clear-settings">Clear</button>
+        </div>
+        <div class="status" id="session-status"></div>
+        <div class="health-inline" id="health-inline">
+          <span class="health-chip" id="health-chip">Status: --</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Tenants</h2>
+        <p class="muted">SQL-style tenant explorer with drill-down details.</p>
+        <div class="row">
+          <button class="primary" id="load-tenants">Refresh Tenants</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="tenants-table">
+            <thead>
+              <tr>
+                <th>Tenant</th>
+                <th>Tier</th>
+                <th>Token Limit</th>
+                <th>Spend Limit</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="tenants-body"></tbody>
+          </table>
+        </div>
+        <div class="status" id="tenants-status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Tenant Detail</h2>
+        <p class="muted">Select a tenant to view keys and usage.</p>
+        <div class="detail-card" id="tenant-detail">
+          <div class="detail-title" id="detail-name">No tenant selected</div>
+          <div class="detail-meta">
+            <span id="detail-tier">Tier: --</span>
+            <span id="detail-created">Created: --</span>
+          </div>
+        </div>
+        <div class="detail-actions">
+          <button class="ghost" id="detail-usage">Fetch Usage</button>
+          <button class="ghost" id="detail-keys">Load Keys</button>
+        </div>
+        <div class="usage-card" id="detail-usage-card">
+          <div>
+            <div class="usage-label">Requests</div>
+            <div class="usage-value" id="detail-requests">--</div>
+          </div>
+          <div>
+            <div class="usage-label">Tokens</div>
+            <div class="usage-value" id="detail-tokens">--</div>
+          </div>
+          <div>
+            <div class="usage-label">Spend (USD)</div>
+            <div class="usage-value" id="detail-cost">--</div>
+          </div>
+        </div>
+        <div class="key-list" id="detail-keys-list"></div>
+        <div class="status" id="detail-status"></div>
+        <div class="field inline-field">
+          <span>Revoke Key</span>
+          <input id="detail-revoke-input" type="text" placeholder="key name" />
+        </div>
+        <div class="field inline-field">
+          <span>Reason (optional)</span>
+          <input id="detail-revoke-reason" type="text" placeholder="compromised / rotated / unused" />
+        </div>
+        <div class="row">
+          <button class="ghost" id="detail-revoke">Revoke Key</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>LLM Gateway - Tenant Explorer</div>
+      <div>Designed as a senior AI systems portfolio artifact.</div>
+    </footer>
+
+    <script src="/static/shared.js"></script>
+    <script src="/static/tenants.js"></script>
+  </body>
+</html>
