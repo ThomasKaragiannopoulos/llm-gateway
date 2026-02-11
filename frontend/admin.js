@@ -37,6 +37,9 @@ const adminElements = {
   usageCost: document.getElementById("usage-cost"),
   usageStatus: document.getElementById("usage-status"),
   keyList: document.getElementById("key-list"),
+  loadAudit: document.getElementById("load-audit"),
+  auditBody: document.getElementById("audit-body"),
+  auditStatus: document.getElementById("audit-status"),
 };
 
 const runHealthCheck = async () => {
@@ -292,3 +295,31 @@ adminElements.fetchUsage?.addEventListener("click", async () => {
 loadSettings();
 updateEnvPill(adminElements.envPill);
 renderKeyList(adminElements.keyList);
+
+adminElements.loadAudit?.addEventListener("click", async () => {
+  try {
+    const result = await apiFetch("/v1/admin/audit", { method: "GET" });
+    adminElements.auditBody.innerHTML = "";
+    if (!result.actions.length) {
+      adminElements.auditBody.innerHTML = "<tr><td colspan=\"5\">No audit events.</td></tr>";
+    } else {
+      result.actions.forEach((entry) => {
+        const row = document.createElement("tr");
+        const created = entry.created_at ? new Date(entry.created_at).toLocaleString() : "--";
+        const target = entry.target_id ? `${entry.target_type}:${entry.target_id}` : entry.target_type;
+        const meta = entry.metadata ? JSON.stringify(entry.metadata) : "--";
+        row.innerHTML = `
+          <td>${created}</td>
+          <td>${entry.actor}</td>
+          <td>${entry.action}</td>
+          <td>${target}</td>
+          <td>${meta}</td>
+        `;
+        adminElements.auditBody.appendChild(row);
+      });
+    }
+    setStatus(adminElements.auditStatus, "Audit log loaded.", "ok");
+  } catch (err) {
+    setStatus(adminElements.auditStatus, err.message, "error");
+  }
+});

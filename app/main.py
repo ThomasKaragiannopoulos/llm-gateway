@@ -44,6 +44,8 @@ from app.schemas import (
     CreateTenantResponse,
     ListTenantKeysResponse,
     ListTenantsResponse,
+    AdminAuditResponse,
+    AdminActionEntry,
     RevokeKeyByNameRequest,
     RevokeKeyRequest,
     RevokeKeyResponse,
@@ -804,6 +806,47 @@ async def list_tenants(request: Request):
         for t in tenants
     ]
     return ListTenantsResponse(tenants=rows)
+
+
+@app.get("/v1/admin/audit", response_model=AdminAuditResponse)
+async def audit_log(request: Request, limit: int = 50):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    safe_limit = max(1, min(limit, 200))
+    db = get_session()
+    try:
+        rows = (
+            db.query(AdminAction, Tenant.name)
+            .join(Tenant, Tenant.id == AdminAction.actor_tenant_id)
+            .order_by(AdminAction.created_at.desc())
+            .limit(safe_limit)
+            .all()
+        )
+    finally:
+        db.close()
+
+    actions = []
+    for action_row, actor_name in rows:
+        metadata = None
+        if action_row.metadata_json:
+            try:
+                metadata = json.loads(action_row.metadata_json)
+            except json.JSONDecodeError:
+                metadata = {"raw": action_row.metadata_json}
+        actions.append(
+            AdminActionEntry(
+                action=action_row.action,
+                actor=actor_name,
+                target_type=action_row.target_type,
+                target_id=action_row.target_id,
+                created_at=action_row.created_at.isoformat() if action_row.created_at else "",
+                metadata=metadata,
+            )
+        )
+
+    return AdminAuditResponse(actions=actions)
 
 
 @app.post("/v1/admin/tenants/{tenant_name}/keys", response_model=CreateKeyResponse)

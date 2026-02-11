@@ -69,6 +69,19 @@ class ListTenantsResponse(BaseModel):
     tenants: list[TenantSummary]
 
 
+class AdminActionEntry(BaseModel):
+    action: str
+    actor: str
+    target_type: str
+    target_id: str | None
+    created_at: str
+    metadata: dict | None = None
+
+
+class AdminAuditResponse(BaseModel):
+    actions: list[AdminActionEntry]
+
+
 class TenantKeyInfo(BaseModel):
     key_id: str
     name: str
