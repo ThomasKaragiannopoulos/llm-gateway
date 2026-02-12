@@ -61,62 +61,8 @@
       </section>
 
       <section class="panel">
-        <h2>Tenant Lifecycle</h2>
-        <p class="muted">Create tenants explicitly, then issue keys as needed.</p>
-        <div class="stack">
-          <div class="stack-block">
-            <div class="stack-title">Create Tenant</div>
-            <label class="field">
-              <span>Tenant Name</span>
-              <input id="tenant-name" type="text" placeholder="acme-labs" />
-            </label>
-            <label class="field">
-              <span>Tier</span>
-              <input id="tenant-tier" type="text" placeholder="free" />
-            </label>
-            <div class="row">
-              <button class="primary" id="create-tenant">Create Tenant</button>
-            </div>
-            <div class="status" id="tenant-status"></div>
-          </div>
-          <div class="stack-block">
-            <div class="stack-title">Create API Key</div>
-            <p class="muted">Tenant must already exist.</p>
-            <label class="field">
-              <span>Tenant Name</span>
-              <input id="key-tenant" type="text" placeholder="acme-labs" />
-            </label>
-            <label class="field">
-              <span>Key Name</span>
-              <input id="key-name" type="text" placeholder="prod-default" />
-            </label>
-            <div class="row">
-              <button class="primary" id="create-key">Generate Key</button>
-              <button class="ghost" id="copy-latest" disabled>Copy Latest</button>
-            </div>
-            <div class="key-card" id="key-result">
-              <div class="key-title">New Key</div>
-              <div class="key-value" id="key-value">No key generated yet.</div>
-            </div>
-          </div>
-          <div class="stack-block">
-            <div class="stack-title">List Tenant Keys</div>
-            <label class="field">
-              <span>Tenant Name</span>
-              <input id="list-tenant" type="text" placeholder="acme-labs" />
-            </label>
-            <div class="row">
-              <button class="ghost" id="list-keys">Load Keys</button>
-            </div>
-            <div class="key-list" id="tenant-keys"></div>
-            <div class="status" id="keys-status"></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
         <h2>Key Rotation &amp; Revocation</h2>
-        <p class="muted">Operational key hygiene for admin and tenant keys.</p>
+        <p class="muted">Rotate the admin key and track privileged access.</p>
         <div class="stack">
           <div class="stack-block">
             <div class="stack-title">Rotate Admin Key</div>
@@ -133,83 +79,7 @@
               <div class="key-value" id="admin-key-value">No rotation yet.</div>
             </div>
           </div>
-          <div class="stack-block">
-            <div class="stack-title">Revoke Tenant Key</div>
-            <p class="muted">Deactivate a tenant API key immediately.</p>
-            <label class="field">
-              <span>Tenant Name</span>
-              <input id="revoke-tenant" type="text" placeholder="acme-labs" />
-            </label>
-            <label class="field">
-              <span>Key Name</span>
-              <input id="revoke-key-name" type="text" placeholder="prod-default" />
-            </label>
-            <label class="field">
-              <span>Reason (optional)</span>
-              <input id="revoke-reason" type="text" placeholder="compromised / rotated / unused" />
-            </label>
-            <div class="row">
-              <button class="ghost" id="revoke-key-btn">Revoke Key</button>
-            </div>
-            <div class="status" id="revoke-status"></div>
-          </div>
         </div>
-      </section>
-
-      <section class="panel">
-        <h2>Tenant Limits</h2>
-        <p class="muted">Update per-day quotas. Leave blank to keep existing limits.</p>
-        <label class="field">
-          <span>Tenant Name</span>
-          <input id="limits-tenant" type="text" placeholder="acme-labs" />
-        </label>
-        <div class="grid-2">
-          <label class="field">
-            <span>Token Limit / Day</span>
-            <input id="token-limit" type="number" min="1" placeholder="500000" />
-          </label>
-          <label class="field">
-            <span>Spend Limit / Day (USD)</span>
-            <input id="spend-limit" type="number" min="0" step="0.01" placeholder="25.00" />
-          </label>
-        </div>
-        <div class="row">
-          <button class="primary" id="set-limits">Apply Limits</button>
-        </div>
-        <div class="status" id="limits-status"></div>
-      </section>
-
-      <section class="panel">
-        <h2>Usage Snapshot</h2>
-        <p class="muted">Query aggregate usage for a tenant.</p>
-        <label class="field">
-          <span>Tenant Name</span>
-          <input id="usage-tenant" type="text" placeholder="acme-labs" />
-        </label>
-        <div class="row">
-          <button class="primary" id="fetch-usage">Fetch Usage</button>
-        </div>
-        <div class="usage-card" id="usage-card">
-          <div>
-            <div class="usage-label">Requests</div>
-            <div class="usage-value" id="usage-requests">--</div>
-          </div>
-          <div>
-            <div class="usage-label">Tokens</div>
-            <div class="usage-value" id="usage-tokens">--</div>
-          </div>
-          <div>
-            <div class="usage-label">Spend (USD)</div>
-            <div class="usage-value" id="usage-cost">--</div>
-          </div>
-        </div>
-        <div class="status" id="usage-status"></div>
-      </section>
-
-      <section class="panel">
-        <h2>Recent Keys</h2>
-        <p class="muted">Stored locally for convenience. Clear the session to remove them.</p>
-        <div class="key-list" id="key-list"></div>
       </section>
 
       <section class="panel">

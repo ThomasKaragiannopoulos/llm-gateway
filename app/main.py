@@ -179,6 +179,23 @@ def frontend_tenants():
     return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
 
+@app.get("/keys")
+def frontend_keys():
+    keys_path = os.path.join(frontend_root, "keys.html")
+    if os.path.isfile(keys_path):
+        return FileResponse(keys_path)
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+
+@app.get("/chat")
+def frontend_chat():
+    chat_path = os.path.join(frontend_root, "chat.html")
+    if os.path.isfile(chat_path):
+        return FileResponse(chat_path)
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+
+
 @app.get("/metrics")
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
@@ -1148,7 +1165,7 @@ async def usage_summary(tenant_name: str, request: Request):
 async def api_key_auth(request: Request, call_next):
     if request.url.path in {"/health", "/metrics", "/health/ollama"}:
         return await call_next(request)
-    if request.url.path in {"/", "/admin", "/tenants"} or request.url.path.startswith("/static"):
+    if request.url.path in {"/", "/admin", "/tenants", "/keys", "/chat"} or request.url.path.startswith("/static"):
         return await call_next(request)
 
     raw_key = None

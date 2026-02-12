@@ -4,6 +4,10 @@ const tenantElements = {
   saveSettings: document.getElementById("save-settings"),
   clearSettings: document.getElementById("clear-settings"),
   healthChip: document.getElementById("health-chip"),
+  tenantName: document.getElementById("tenant-name"),
+  tenantTier: document.getElementById("tenant-tier"),
+  createTenant: document.getElementById("create-tenant"),
+  tenantStatus: document.getElementById("tenant-status"),
   loadTenants: document.getElementById("load-tenants"),
   tenantsBody: document.getElementById("tenants-body"),
   tenantsStatus: document.getElementById("tenants-status"),
@@ -17,9 +21,10 @@ const tenantElements = {
   detailCost: document.getElementById("detail-cost"),
   detailKeysList: document.getElementById("detail-keys-list"),
   detailStatus: document.getElementById("detail-status"),
-  detailRevokeInput: document.getElementById("detail-revoke-input"),
-  detailRevokeReason: document.getElementById("detail-revoke-reason"),
-  detailRevoke: document.getElementById("detail-revoke"),
+  tokenLimit: document.getElementById("token-limit"),
+  spendLimit: document.getElementById("spend-limit"),
+  setLimits: document.getElementById("set-limits"),
+  limitsStatus: document.getElementById("limits-status"),
 };
 
 let selectedTenant = null;
@@ -35,6 +40,14 @@ const setSelectedTenant = (tenant) => {
   tenantElements.detailTokens.textContent = "--";
   tenantElements.detailCost.textContent = "--";
   tenantElements.detailKeysList.innerHTML = "";
+  if (tenantElements.tokenLimit) {
+    tenantElements.tokenLimit.value =
+      tenant && tenant.token_limit_per_day ? String(tenant.token_limit_per_day) : "";
+  }
+  if (tenantElements.spendLimit) {
+    tenantElements.spendLimit.value =
+      tenant && tenant.spend_limit_per_day_usd ? String(tenant.spend_limit_per_day_usd) : "";
+  }
 };
 
 const renderTenants = (tenants) => {
@@ -92,6 +105,24 @@ tenantElements.saveSettings?.addEventListener("click", async () => {
 
 tenantElements.clearSettings?.addEventListener("click", () => {
   clearSettings(tenantElements.sessionStatus, tenantElements.envPill);
+});
+
+tenantElements.createTenant?.addEventListener("click", async () => {
+  const tenant = tenantElements.tenantName.value.trim();
+  if (!tenant) {
+    setStatus(tenantElements.tenantStatus, "Tenant name is required.", "warn");
+    return;
+  }
+  const tier = tenantElements.tenantTier.value.trim();
+  try {
+    const result = await apiFetch("/v1/admin/tenants", {
+      method: "POST",
+      body: JSON.stringify({ tenant, tier: tier || null }),
+    });
+    setStatus(tenantElements.tenantStatus, `Tenant ${result.tenant} created (${result.tier}).`, "ok");
+  } catch (err) {
+    setStatus(tenantElements.tenantStatus, err.message, "error");
+  }
 });
 
 tenantElements.loadTenants?.addEventListener("click", async () => {
@@ -167,32 +198,26 @@ tenantElements.detailKeys?.addEventListener("click", async () => {
   }
 });
 
-tenantElements.detailRevoke?.addEventListener("click", async () => {
-  const name = tenantElements.detailRevokeInput.value.trim();
-  const reason = tenantElements.detailRevokeReason?.value.trim();
+tenantElements.setLimits?.addEventListener("click", async () => {
   if (!selectedTenant) {
-    setStatus(tenantElements.detailStatus, "Select a tenant first.", "warn");
+    setStatus(tenantElements.limitsStatus, "Select a tenant first.", "warn");
     return;
   }
-  if (!name) {
-    setStatus(tenantElements.detailStatus, "Key name is required.", "warn");
-    return;
-  }
+  const tokenValue = tenantElements.tokenLimit.value.trim();
+  const spendValue = tenantElements.spendLimit.value.trim();
+  const payload = {
+    tenant: selectedTenant.tenant,
+    token_limit_per_day: tokenValue ? Number(tokenValue) : null,
+    spend_limit_per_day_usd: spendValue ? Number(spendValue) : null,
+  };
   try {
-    const result = await apiFetch(
-      `/v1/admin/tenants/${encodeURIComponent(selectedTenant.tenant)}/keys/revoke`,
-      {
+    await apiFetch("/v1/admin/limits", {
       method: "POST",
-      body: JSON.stringify({ name, reason: reason || null }),
-    }
-    );
-    setStatus(
-      tenantElements.detailStatus,
-      result.tenant ? `Key revoked for ${result.tenant}.` : "Key revoked.",
-      "ok"
-    );
+      body: JSON.stringify(payload),
+    });
+    setStatus(tenantElements.limitsStatus, "Limits updated.", "ok");
   } catch (err) {
-    setStatus(tenantElements.detailStatus, err.message, "error");
+    setStatus(tenantElements.limitsStatus, err.message, "error");
   }
 });
 

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Gateway API Keys</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark">LG</div>
+        <div class="brand-text">
+          <div class="brand-title">API Keys</div>
+          <div class="brand-subtitle">Create, revoke, and inspect key metadata</div>
+        </div>
+      </div>
+      <div class="env-pill" id="env-pill">Disconnected</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel hero">
+        <div class="hero-top">
+          <div>
+            <div class="eyebrow">Key Operations</div>
+            <h2>Tenant-Scoped API Key Management</h2>
+          </div>
+          <div class="pill">Keys</div>
+        </div>
+        <p class="muted">
+          Issue named keys per tenant, track metadata, and revoke by name. Raw keys are only shown
+          once on creation.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Admin Session</h2>
+        <p class="muted">
+          Provide admin credentials to manage keys. Stored locally in your browser only.
+        </p>
+        <label class="field">
+          <span>Gateway Base URL</span>
+          <input id="base-url" type="text" placeholder="http://localhost:8000" />
+        </label>
+        <label class="field">
+          <span>Admin API Key</span>
+          <input id="admin-key" type="password" placeholder="sk-admin-..." />
+        </label>
+        <div class="row">
+          <button class="primary" id="save-settings">Save &amp; Check</button>
+          <button class="ghost" id="clear-settings">Clear</button>
+        </div>
+        <div class="status" id="session-status"></div>
+        <div class="health-inline" id="health-inline">
+          <span class="health-chip" id="health-chip">Status: --</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Create API Key</h2>
+        <p class="muted">Tenant must already exist.</p>
+        <label class="field">
+          <span>Tenant Name</span>
+          <input id="key-tenant" type="text" placeholder="acme-labs" />
+        </label>
+        <label class="field">
+          <span>Key Name</span>
+          <input id="key-name" type="text" placeholder="prod-default" />
+        </label>
+        <div class="row">
+          <button class="primary" id="create-key">Generate Key</button>
+          <button class="ghost" id="copy-latest" disabled>Copy Latest</button>
+        </div>
+        <div class="key-card" id="key-result">
+          <div class="key-title">New Key</div>
+          <div class="key-value" id="key-value">No key generated yet.</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>List Tenant Keys</h2>
+        <label class="field">
+          <span>Tenant Name</span>
+          <input id="list-tenant" type="text" placeholder="acme-labs" />
+        </label>
+        <div class="row">
+          <button class="ghost" id="list-keys">Load Keys</button>
+        </div>
+        <div class="key-list" id="tenant-keys"></div>
+        <div class="status" id="keys-status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Revoke Key</h2>
+        <p class="muted">Revoke by tenant + key name.</p>
+        <label class="field">
+          <span>Tenant Name</span>
+          <input id="revoke-tenant" type="text" placeholder="acme-labs" />
+        </label>
+        <label class="field">
+          <span>Key Name</span>
+          <input id="revoke-key-name" type="text" placeholder="prod-default" />
+        </label>
+        <label class="field">
+          <span>Reason (optional)</span>
+          <input id="revoke-reason" type="text" placeholder="compromised / rotated / unused" />
+        </label>
+        <div class="row">
+          <button class="ghost" id="revoke-key-btn">Revoke Key</button>
+        </div>
+        <div class="status" id="revoke-status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent Keys</h2>
+        <p class="muted">Stored locally for convenience. Clear the session to remove them.</p>
+        <div class="key-list" id="key-list"></div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>LLM Gateway - API Keys</div>
+      <div>Designed as a senior AI systems portfolio artifact.</div>
+    </footer>
+
+    <script src="/static/shared.js"></script>
+    <script src="/static/keys.js"></script>
+  </body>
+</html>

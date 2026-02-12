@@ -34,35 +34,53 @@
         </p>
         <div class="hero-grid">
           <div class="hero-card">
-            <div class="hero-label">Admin Panel</div>
-            <div class="hero-value">Keys, rotation, lifecycle</div>
+            <div class="hero-label">Admin</div>
+            <div class="hero-value">Session, audit, rotation</div>
           </div>
           <div class="hero-card">
-            <div class="hero-label">Tenant Explorer</div>
-            <div class="hero-value">SQL-style view + drilldown</div>
+            <div class="hero-label">Tenants</div>
+            <div class="hero-value">Lifecycle, limits, usage</div>
           </div>
           <div class="hero-card">
-            <div class="hero-label">Telemetry</div>
-            <div class="hero-value">Usage + cost traces</div>
+            <div class="hero-label">API Keys</div>
+            <div class="hero-value">Create, revoke, metadata</div>
           </div>
         </div>
       </section>
 
       <section class="panel">
-        <h2>Admin Panel</h2>
-        <p class="muted">Privileged controls for tenant lifecycle, keys, and governance.</p>
+        <h2>Admin</h2>
+        <p class="muted">Session, audit log, and admin key rotation.</p>
         <div class="row">
-          <a class="primary button-link" href="/admin">Open Admin Panel</a>
+          <a class="primary button-link" href="/admin">Open Admin</a>
         </div>
       </section>
 
       <section class="panel">
-        <h2>Tenant Explorer</h2>
-        <p class="muted">SQL-style tenant viewer with drill-down usage and key management.</p>
+        <h2>Tenants</h2>
+        <p class="muted">Create tenants, set limits, and inspect usage.</p>
         <div class="row">
-          <a class="primary button-link" href="/tenants">Open Tenant Explorer</a>
+          <a class="primary button-link" href="/tenants">Open Tenants</a>
         </div>
       </section>
+
+      <section class="panel">
+        <h2>API Keys</h2>
+        <p class="muted">Create and revoke keys with metadata visibility.</p>
+        <div class="row">
+          <a class="primary button-link" href="/keys">Open API Keys</a>
+        </div>
+      </section>
+
+
+      <section class="panel">
+        <h2>Chat Playground</h2>
+        <p class="muted">Send test prompts with a tenant key to validate routing, caching, and quotas.</p>
+        <div class="row">
+          <a class="primary button-link" href="/chat">Open Chat</a>
+        </div>
+      </section>
+
     </main>
 
     <footer class="site-footer">

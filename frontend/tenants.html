@@ -60,6 +60,23 @@
       <section class="panel">
         <h2>Tenants</h2>
         <p class="muted">SQL-style tenant explorer with drill-down details.</p>
+        <div class="stack">
+          <div class="stack-block">
+            <div class="stack-title">Create Tenant</div>
+            <label class="field">
+              <span>Tenant Name</span>
+              <input id="tenant-name" type="text" placeholder="acme-labs" />
+            </label>
+            <label class="field">
+              <span>Tier</span>
+              <input id="tenant-tier" type="text" placeholder="free" />
+            </label>
+            <div class="row">
+              <button class="primary" id="create-tenant">Create Tenant</button>
+            </div>
+            <div class="status" id="tenant-status"></div>
+          </div>
+        </div>
         <div class="row">
           <button class="primary" id="load-tenants">Refresh Tenants</button>
         </div>
@@ -110,16 +127,20 @@
         </div>
         <div class="key-list" id="detail-keys-list"></div>
         <div class="status" id="detail-status"></div>
-        <div class="field inline-field">
-          <span>Revoke Key</span>
-          <input id="detail-revoke-input" type="text" placeholder="key name" />
-        </div>
-        <div class="field inline-field">
-          <span>Reason (optional)</span>
-          <input id="detail-revoke-reason" type="text" placeholder="compromised / rotated / unused" />
-        </div>
-        <div class="row">
-          <button class="ghost" id="detail-revoke">Revoke Key</button>
+        <div class="stack-block">
+          <div class="stack-title">Set Limits</div>
+          <label class="field">
+            <span>Token Limit / Day</span>
+            <input id="token-limit" type="number" min="1" placeholder="500000" />
+          </label>
+          <label class="field">
+            <span>Spend Limit / Day (USD)</span>
+            <input id="spend-limit" type="number" min="0" step="0.01" placeholder="25.00" />
+          </label>
+          <div class="row">
+            <button class="ghost" id="set-limits">Apply Limits</button>
+          </div>
+          <div class="status" id="limits-status"></div>
         </div>
       </section>
     </main>

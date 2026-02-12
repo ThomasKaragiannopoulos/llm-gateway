@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Gateway Chat Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark">LG</div>
+        <div class="brand-text">
+          <div class="brand-title">Chat Playground</div>
+          <div class="brand-subtitle">Prompt verification for routing, cache, and quotas</div>
+        </div>
+      </div>
+      <div class="env-pill" id="env-pill">Disconnected</div>
+    </header>
+
+    <main class="layout chat-layout">
+      <section class="panel hero">
+        <div class="hero-top">
+          <div>
+            <div class="eyebrow">Tenant Chat</div>
+            <h2>Validate the full request lifecycle</h2>
+          </div>
+          <div class="pill">Live traffic</div>
+        </div>
+        <p class="muted">
+          Use a tenant API key to send prompts through the gateway. Inspect response content and confirm that
+          metrics, quotas, and cache behavior are reflected in Grafana.
+        </p>
+      </section>
+
+      <section class="panel chat-panel">
+        <h2>Session</h2>
+        <p class="muted">Configure the gateway base URL and tenant key. Stored locally in your browser only.</p>
+        <div class="chat-top-row">
+          <label class="field">
+            <span>Tenant</span>
+            <select id="tenant-select"></select>
+          </label>
+          <label class="field">
+            <span>Key</span>
+            <select id="key-select"></select>
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="model" type="text" placeholder="tinyllama:latest" />
+          </label>
+        </div>
+        <div class="chat-top-row">
+          <label class="field">
+            <span>Gateway Base URL</span>
+            <input id="base-url" type="text" placeholder="http://localhost:8000" />
+          </label>
+          <label class="field">
+            <span>Tenant API Key (Bearer)</span>
+            <input id="api-key" type="password" placeholder="sk-tenant-..." />
+          </label>
+          <label class="field">
+            <span>Temperature</span>
+            <input id="temperature" type="number" min="0" max="2" step="0.1" placeholder="0.7" />
+          </label>
+        </div>
+        <div class="chat-top-row">
+          <label class="field">
+            <span>Max Tokens</span>
+            <input id="max-tokens" type="number" min="1" placeholder="256" />
+          </label>
+        </div>
+        <div class="row">
+          <button class="primary" id="save-settings">Save Session</button>
+          <button class="ghost" id="clear-settings">Clear</button>
+          <button class="ghost" id="reload-keys">Reload Keys</button>
+          <button class="ghost" id="fetch-tenants">Fetch Tenants</button>
+        </div>
+        <div class="status" id="session-status"></div>
+      </section>
+
+      <section class="panel chat-panel">
+        <h2>Input</h2>
+        <p class="muted">Send a prompt to the gateway using the selected tenant key.</p>
+        <label class="field">
+          <span>Prompt</span>
+          <textarea id="prompt" placeholder="Ask a question or request a summary..."></textarea>
+        </label>
+        <div class="row">
+          <button class="primary" id="send-chat">Send</button>
+          <button class="ghost" id="clear-chat">Clear</button>
+        </div>
+        <div class="status" id="chat-status"></div>
+      </section>
+
+      <section class="panel chat-panel">
+        <h2>Output</h2>
+        <p class="muted">Latest response content and metadata.</p>
+        <div class="response-meta" id="response-meta">No response yet.</div>
+        <pre class="response-box" id="response-box"></pre>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>LLM Gateway - Chat Playground</div>
+      <div>Designed as a senior AI systems portfolio artifact.</div>
+    </footer>
+
+    <script src="/static/shared.js"></script>
+    <script src="/static/chat.js"></script>
+  </body>
+</html>
