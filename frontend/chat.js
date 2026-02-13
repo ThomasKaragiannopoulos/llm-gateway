@@ -23,6 +23,8 @@ const chatElements = {
   responseMeta: document.getElementById("response-meta"),
 };
 
+const ALL_TENANTS_VALUE = "__all__";
+
 const getChatSettings = () => {
   return JSON.parse(localStorage.getItem(CHAT_SETTINGS_KEY) || "{}");
 };
@@ -100,6 +102,12 @@ const loadTenantsFromAdmin = async () => {
     selectPrompt.value = "";
     selectPrompt.textContent = tenants.length ? "Select tenant" : "No tenants found";
     tenantSelect.appendChild(selectPrompt);
+    if (tenants.length) {
+      const allOption = document.createElement("option");
+      allOption.value = ALL_TENANTS_VALUE;
+      allOption.textContent = "All tenants (show all keys)";
+      tenantSelect.appendChild(allOption);
+    }
     tenants.forEach((tenant) => {
       const option = document.createElement("option");
       option.value = tenant;
@@ -117,14 +125,20 @@ const loadTenantsFromAdmin = async () => {
   }
 };
 
-const loadStoredKeys = () => {
-  const keys = JSON.parse(localStorage.getItem(KEYS_KEY) || "[]");
+const normalizeTenant = (value) => (value || "").trim().toLowerCase();
 
+const renderKeyOptions = (tenant, keys) => {
   const keySelect = chatElements.keySelect;
   keySelect.innerHTML = "";
   const keyPlaceholder = document.createElement("option");
   keyPlaceholder.value = "";
-  keyPlaceholder.textContent = keys.length ? "Select a stored key" : "No stored keys";
+  if (!tenant) {
+    keyPlaceholder.textContent = "Select a tenant to see keys";
+  } else if (tenant === ALL_TENANTS_VALUE) {
+    keyPlaceholder.textContent = keys.length ? "Select a stored key" : "No active keys found";
+  } else {
+    keyPlaceholder.textContent = keys.length ? "Select a stored key" : "No active keys for tenant";
+  }
   keySelect.appendChild(keyPlaceholder);
 
   keys.forEach((item, idx) => {
@@ -138,9 +152,89 @@ const loadStoredKeys = () => {
   });
 };
 
+const getStoredKeys = () => JSON.parse(localStorage.getItem(KEYS_KEY) || "[]");
+
+const filterStoredKeys = (keys, tenant, activeNamesByTenant) => {
+  const normalizedTenant = normalizeTenant(tenant);
+  return keys.filter((item) => {
+    if (item.active === false) {
+      return false;
+    }
+    if (!tenant) {
+      return false;
+    }
+    const normalizedItemTenant = normalizeTenant(item.tenant);
+    if (tenant !== ALL_TENANTS_VALUE && normalizedItemTenant !== normalizedTenant) {
+      return false;
+    }
+    if (!activeNamesByTenant) {
+      return true;
+    }
+    const nameSet = activeNamesByTenant.get(normalizedItemTenant) || new Set();
+    if (!item.name) {
+      return false;
+    }
+    return nameSet.has(item.name);
+  });
+};
+
+const fetchActiveKeyNames = async (tenant) => {
+  const result = await apiFetch(`/v1/admin/tenants/${encodeURIComponent(tenant)}/keys`, {
+    method: "GET",
+  });
+  return (result.keys || []).filter((k) => k.active).map((k) => k.name);
+};
+
+const loadTenantKeysFromAdmin = async (tenant = "") => {
+  const keys = getStoredKeys();
+  const adminSettings = getAdminSettings();
+  if (!tenant) {
+    renderKeyOptions("", []);
+    return;
+  }
+
+  if (!adminSettings.adminKey) {
+    const filtered = filterStoredKeys(keys, tenant, null);
+    renderKeyOptions(tenant, filtered);
+    setStatus(chatElements.sessionStatus, "Admin session required to verify active keys.", "warn");
+    return;
+  }
+
+  try {
+    if (tenant === ALL_TENANTS_VALUE) {
+      const tenantResult = await apiFetch("/v1/admin/tenants", { method: "GET" });
+      const tenants = (tenantResult.tenants || []).map((t) => t.tenant);
+      const activeNamesByTenant = new Map();
+      const results = await Promise.all(
+        tenants.map(async (t) => {
+          const names = await fetchActiveKeyNames(t);
+          activeNamesByTenant.set(normalizeTenant(t), new Set(names));
+          return names.length;
+        })
+      );
+      const filtered = filterStoredKeys(keys, tenant, activeNamesByTenant);
+      renderKeyOptions(tenant, filtered);
+      if (!results.some((count) => count > 0)) {
+        setStatus(chatElements.sessionStatus, "No active keys found.", "warn");
+      }
+      return;
+    }
+
+    const activeNames = await fetchActiveKeyNames(tenant);
+    const activeNamesByTenant = new Map([[normalizeTenant(tenant), new Set(activeNames)]]);
+    const filtered = filterStoredKeys(keys, tenant, activeNamesByTenant);
+    renderKeyOptions(tenant, filtered);
+  } catch (err) {
+    const filtered = filterStoredKeys(keys, tenant, null);
+    renderKeyOptions(tenant, filtered);
+    setStatus(chatElements.sessionStatus, err.message, "error");
+  }
+};
+
 const syncKeyFromTenant = () => {
   const tenant = chatElements.tenantSelect.value;
-  if (!tenant) {
+  loadTenantKeysFromAdmin(tenant);
+  if (!tenant || tenant === ALL_TENANTS_VALUE) {
     return;
   }
   const options = Array.from(chatElements.keySelect.options);
@@ -168,10 +262,14 @@ chatElements.tenantSelect?.addEventListener("change", () => {
   syncKeyFromTenant();
 });
 
+chatElements.keySelect?.addEventListener("focus", () => {
+  loadTenantKeysFromAdmin(chatElements.tenantSelect.value);
+});
+
 chatElements.saveSettings?.addEventListener("click", saveChatSettings);
 chatElements.clearSettings?.addEventListener("click", clearChatSettings);
 chatElements.reloadKeys?.addEventListener("click", () => {
-  loadStoredKeys();
+  loadTenantKeysFromAdmin(chatElements.tenantSelect.value);
   loadTenantsFromAdmin();
   setStatus(chatElements.sessionStatus, "Keys reloaded and tenants refreshed.", "ok");
 });
@@ -260,5 +358,5 @@ chatElements.sendChat?.addEventListener("click", async () => {
 });
 
 loadChatSettings();
-loadStoredKeys();
+renderKeyOptions("", []);
 loadTenantsFromAdmin();
