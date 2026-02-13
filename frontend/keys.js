@@ -84,7 +84,13 @@ keyElements.createKey?.addEventListener("click", async () => {
     keyElements.keyValue.textContent = result.api_key;
     keyElements.copyLatest.disabled = false;
     const keys = JSON.parse(localStorage.getItem(KEYS_KEY) || "[]");
-    keys.unshift({ tenant: result.tenant, name: result.name, apiKey: result.api_key, createdAt: Date.now() });
+    keys.unshift({
+      tenant: result.tenant,
+      name: result.name,
+      apiKey: result.api_key,
+      createdAt: Date.now(),
+      active: true,
+    });
     localStorage.setItem(KEYS_KEY, JSON.stringify(keys.slice(0, 12)));
     renderKeyList(keyElements.keyList);
     setStatus(keyElements.sessionStatus, `Key created for ${result.tenant}.`, "ok");
@@ -163,6 +169,14 @@ keyElements.revokeKeyBtn?.addEventListener("click", async () => {
       method: "POST",
       body: JSON.stringify({ name, reason: reason || null }),
     });
+    const keys = JSON.parse(localStorage.getItem(KEYS_KEY) || "[]");
+    const updated = keys.map((item) => {
+      if (item.tenant === tenant && item.name === name) {
+        return { ...item, active: false, revokedAt: Date.now(), revokedReason: reason || null };
+      }
+      return item;
+    });
+    localStorage.setItem(KEYS_KEY, JSON.stringify(updated));
     setStatus(
       keyElements.revokeStatus,
       result.tenant ? `Key revoked for ${result.tenant}.` : "Key revoked.",
