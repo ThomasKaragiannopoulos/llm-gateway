@@ -11,8 +11,8 @@ from sqlalchemy import engine_from_config, pool
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BASE_DIR))
 
-from app.db.base import Base
-from app.db import models
+from app.db.base import Base  # noqa: E402
+from app.db import models  # noqa: E402,F401
 
 config = context.config
 

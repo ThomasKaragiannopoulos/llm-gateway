@@ -5,6 +5,7 @@ Revises: 6b3457f1ab86
 Create Date: 2026-02-11 11:32:00.000000
 
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -23,7 +24,9 @@ def upgrade() -> None:
         "UPDATE api_keys SET name = 'key-' || substring(id::text, 1, 8) WHERE name IS NULL"
     )
     op.alter_column("api_keys", "name", nullable=False)
-    op.create_index("uq_api_keys_tenant_name", "api_keys", ["tenant_id", "name"], unique=True)
+    op.create_index(
+        "uq_api_keys_tenant_name", "api_keys", ["tenant_id", "name"], unique=True
+    )
 
 
 def downgrade() -> None:

@@ -65,7 +65,9 @@ class OllamaProvider(Provider):
             payload["options"]["num_predict"] = request.max_tokens
 
         async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
+            async with client.stream(
+                "POST", f"{self.base_url}/api/chat", json=payload
+            ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line:
@@ -78,7 +80,9 @@ class OllamaProvider(Provider):
                         prompt_tokens = int(data.get("prompt_eval_count") or 0)
                         completion_tokens = int(data.get("eval_count") or 0)
                         if prompt_tokens + completion_tokens == 0:
-                            completion_tokens = _estimate_tokens(request.messages, content)
+                            completion_tokens = _estimate_tokens(
+                                request.messages, content
+                            )
                         yield StreamChunk(
                             content=content,
                             done=True,

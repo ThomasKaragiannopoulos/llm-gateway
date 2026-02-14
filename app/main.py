@@ -6,28 +6,27 @@ import os
 import sys
 import time
 import uuid
+from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-import httpx
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from redis.asyncio import Redis
 from sqlalchemy import func
 
-logger = logging.getLogger("llm-gateway")
-logger.setLevel(logging.INFO)
-_handler = logging.StreamHandler(sys.stdout)
-_handler.setFormatter(logging.Formatter("%(message)s"))
-logger.addHandler(_handler)
-logger.propagate = False
-
-from app.db.models import Request as RequestModel
 from app.auth import hash_api_key
-from app.db.models import AdminAction, ApiKey, Tenant, UsageEvent
+from app.db.models import (
+    AdminAction,
+    ApiKey,
+    Request as RequestModel,
+    Tenant,
+    UsageEvent,
+)
 from app.db.session import get_session
 from app.mock_provider import MockProvider
 from app.ollama_provider import OllamaProvider
@@ -59,10 +58,36 @@ from app.schemas import (
     UsageSummaryResponse,
 )
 
-app = FastAPI(title="llm-gateway")
-frontend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
+logger = logging.getLogger("llm-gateway")
+logger.setLevel(logging.INFO)
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(logging.Formatter("%(message)s"))
+logger.addHandler(_handler)
+logger.propagate = False
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global redis_client
+    redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
+    ensure_admin_key()
+    try:
+        yield
+    finally:
+        if redis_client is not None:
+            await redis_client.close()
+            redis_client = None
+
+
+app = FastAPI(title="llm-gateway", lifespan=lifespan)
+frontend_root = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "frontend")
+)
 if os.path.isdir(frontend_root):
-    app.mount("/static", StaticFiles(directory=frontend_root, html=False), name="frontend-static")
+    app.mount(
+        "/static",
+        StaticFiles(directory=frontend_root, html=False),
+        name="frontend-static",
+    )
 PRIMARY_FAIL_RATE = float(os.getenv("PRIMARY_FAIL_RATE", "0"))
 FALLBACK_FAIL_RATE = float(os.getenv("FALLBACK_FAIL_RATE", "0"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -199,10 +224,10 @@ def frontend_chat():
     return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
 
-
 @app.get("/metrics")
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 @app.get("/health/ollama")
 async def ollama_health():
@@ -240,21 +265,6 @@ async def prometheus_health():
         return {"status": "ok"}
 
 
-@app.on_event("startup")
-async def connect_redis():
-    global redis_client
-    redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
-
-
-@app.on_event("shutdown")
-async def close_redis():
-    global redis_client
-    if redis_client is not None:
-        await redis_client.close()
-        redis_client = None
-
-
-@app.on_event("startup")
 def ensure_admin_key():
     admin_key = os.getenv("ADMIN_API_KEY")
     if not admin_key:
@@ -284,7 +294,14 @@ def ensure_admin_key():
                 .count()
             )
             if named is None:
-                db.add(ApiKey(tenant_id=admin_tenant.id, name="admin-env", key_hash=key_hash, active=True))
+                db.add(
+                    ApiKey(
+                        tenant_id=admin_tenant.id,
+                        name="admin-env",
+                        key_hash=key_hash,
+                        active=True,
+                    )
+                )
                 db.commit()
             else:
                 if active_admin_keys > 0 and named.key_hash != key_hash:
@@ -402,14 +419,18 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
                 fallback_provider = decision.fallback_provider
                 if fallback_provider is None:
                     raise
-                FALLBACK_TOTAL.labels("primary_error", decision.provider, fallback_provider).inc()
+                FALLBACK_TOTAL.labels(
+                    "primary_error", decision.provider, fallback_provider
+                ).inc()
                 provider = providers[fallback_provider]
                 used_provider = fallback_provider
                 result = await provider.generate(routed_payload)
                 response_obj = result.response
                 health_tracker.record(fallback_provider, True)
             if decision.reason == "primary_unhealthy" and decision.fallback_provider:
-                FALLBACK_TOTAL.labels("primary_unhealthy", decision.fallback_provider, decision.provider).inc()
+                FALLBACK_TOTAL.labels(
+                    "primary_unhealthy", decision.fallback_provider, decision.provider
+                ).inc()
             prompt_tokens = result.prompt_tokens
             completion_tokens = result.completion_tokens
             total_tokens = result.total_tokens
@@ -451,11 +472,17 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
         TOKENS_TOTAL.labels(model_name).inc(req_row.total_tokens or 0)
         COST_TOTAL.labels(model_name).inc(req_row.cost_usd or 0.0)
         TENANT_REQUESTS_TOTAL.labels(tenant.name, tenant.tier).inc()
-        TENANT_TOKENS_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.total_tokens or 0)
+        TENANT_TOKENS_TOTAL.labels(tenant.name, tenant.tier).inc(
+            req_row.total_tokens or 0
+        )
         TENANT_COST_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.cost_usd or 0.0)
         response.headers["X-Model-Chosen"] = model_name
         if route_reason != "cache_hit":
-            route_reason = "primary_error" if used_provider != decision.provider else decision.reason
+            route_reason = (
+                "primary_error"
+                if used_provider != decision.provider
+                else decision.reason
+            )
         response.headers["X-Route-Reason"] = route_reason
         response.headers["X-Provider"] = used_provider
         response.headers["X-Cache"] = cache_status
@@ -474,7 +501,6 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
 @app.post("/v1/chat/stream")
 async def chat_stream(payload: ChatRequest, request: Request):
     db = get_session()
-    req_row = None
     start = time.perf_counter()
     response_id = str(uuid.uuid4())
     created = int(time.time())
@@ -488,7 +514,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
     failed = False
     done_sent = False
 
-    async def _stream_from(provider_name: str, routed_payload: ChatRequest, model_name: str):
+    async def _stream_from(
+        provider_name: str, routed_payload: ChatRequest, model_name: str
+    ):
         nonlocal done_sent
         provider = providers[provider_name]
         async for chunk in provider.stream(routed_payload):
@@ -511,7 +539,14 @@ async def chat_stream(payload: ChatRequest, request: Request):
                 return
 
     async def _event_generator():
-        nonlocal used_provider, prompt_tokens, completion_tokens, total_tokens, completed, canceled, failed
+        nonlocal \
+            used_provider, \
+            prompt_tokens, \
+            completion_tokens, \
+            total_tokens, \
+            completed, \
+            canceled, \
+            failed
         req_row = None
         model_name = None
         routed_payload = None
@@ -532,7 +567,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
             model_name = decision.model
             if isinstance(providers.get(decision.provider), OllamaProvider):
                 model_name = OLLAMA_MODEL
-            routed_payload = payload.model_copy(update={"model": model_name, "stream": True})
+            routed_payload = payload.model_copy(
+                update={"model": model_name, "stream": True}
+            )
             used_provider = decision.provider
 
             req_row = RequestModel(
@@ -545,7 +582,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
             db.commit()
 
             try:
-                async for chunk in _stream_from(decision.provider, routed_payload, model_name):
+                async for chunk in _stream_from(
+                    decision.provider, routed_payload, model_name
+                ):
                     if isinstance(chunk, StreamChunk):
                         used_provider = decision.provider
                         if chunk.model:
@@ -554,7 +593,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
                         completion_tokens = int(chunk.completion_tokens or 0)
                         total_tokens = prompt_tokens + completion_tokens
                         if total_tokens == 0:
-                            total_tokens = _estimate_tokens(routed_payload.messages, "".join(content_parts))
+                            total_tokens = _estimate_tokens(
+                                routed_payload.messages, "".join(content_parts)
+                            )
                             completion_tokens = total_tokens
                         yield _format_sse(
                             {
@@ -577,7 +618,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
                     else:
                         yield chunk
                 if not done_sent:
-                    total_tokens = _estimate_tokens(routed_payload.messages, "".join(content_parts))
+                    total_tokens = _estimate_tokens(
+                        routed_payload.messages, "".join(content_parts)
+                    )
                     completion_tokens = total_tokens
                     yield _format_sse(
                         {
@@ -603,9 +646,13 @@ async def chat_stream(payload: ChatRequest, request: Request):
                 health_tracker.record(decision.provider, False)
                 fallback_provider = decision.fallback_provider
                 if fallback_provider and not content_parts:
-                    FALLBACK_TOTAL.labels("primary_error", decision.provider, fallback_provider).inc()
+                    FALLBACK_TOTAL.labels(
+                        "primary_error", decision.provider, fallback_provider
+                    ).inc()
                     used_provider = fallback_provider
-                    async for chunk in _stream_from(fallback_provider, routed_payload, model_name):
+                    async for chunk in _stream_from(
+                        fallback_provider, routed_payload, model_name
+                    ):
                         if isinstance(chunk, StreamChunk):
                             if chunk.model:
                                 model_name = chunk.model
@@ -613,7 +660,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
                             completion_tokens = int(chunk.completion_tokens or 0)
                             total_tokens = prompt_tokens + completion_tokens
                             if total_tokens == 0:
-                                total_tokens = _estimate_tokens(routed_payload.messages, "".join(content_parts))
+                                total_tokens = _estimate_tokens(
+                                    routed_payload.messages, "".join(content_parts)
+                                )
                                 completion_tokens = total_tokens
                             yield _format_sse(
                                 {
@@ -636,7 +685,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
                         else:
                             yield chunk
                     if not done_sent:
-                        total_tokens = _estimate_tokens(routed_payload.messages, "".join(content_parts))
+                        total_tokens = _estimate_tokens(
+                            routed_payload.messages, "".join(content_parts)
+                        )
                         completion_tokens = total_tokens
                         yield _format_sse(
                             {
@@ -699,11 +750,19 @@ async def chat_stream(payload: ChatRequest, request: Request):
 
                     TOKENS_TOTAL.labels(req_row.model).inc(req_row.total_tokens or 0)
                     COST_TOTAL.labels(req_row.model).inc(req_row.cost_usd or 0.0)
-                    tenant = db.query(Tenant).filter(Tenant.id == req_row.tenant_id).one_or_none()
+                    tenant = (
+                        db.query(Tenant)
+                        .filter(Tenant.id == req_row.tenant_id)
+                        .one_or_none()
+                    )
                     if tenant is not None:
                         TENANT_REQUESTS_TOTAL.labels(tenant.name, tenant.tier).inc()
-                        TENANT_TOKENS_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.total_tokens or 0)
-                        TENANT_COST_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.cost_usd or 0.0)
+                        TENANT_TOKENS_TOTAL.labels(tenant.name, tenant.tier).inc(
+                            req_row.total_tokens or 0
+                        )
+                        TENANT_COST_TOTAL.labels(tenant.name, tenant.tier).inc(
+                            req_row.cost_usd or 0.0
+                        )
                 elif canceled:
                     req_row.status = "canceled"
                     req_row.completed_at = func.now()
@@ -727,7 +786,10 @@ async def chat_stream(payload: ChatRequest, request: Request):
 async def create_key(payload: CreateKeyRequest, request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     raw_key = str(uuid.uuid4())
     key_hash = hash_api_key(raw_key)
@@ -749,7 +811,9 @@ async def create_key(payload: CreateKeyRequest, request: Request):
         if existing is not None:
             return JSONResponse(
                 status_code=409,
-                content={"error": {"code": "conflict", "message": "Key name already exists"}},
+                content={
+                    "error": {"code": "conflict", "message": "Key name already exists"}
+                },
             )
 
         db.add(
@@ -800,7 +864,10 @@ def _log_admin_action(
 async def create_tenant(payload: CreateTenantRequest, request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     db = get_session()
     try:
@@ -808,7 +875,9 @@ async def create_tenant(payload: CreateTenantRequest, request: Request):
         if existing is not None:
             return JSONResponse(
                 status_code=409,
-                content={"error": {"code": "conflict", "message": "Tenant already exists"}},
+                content={
+                    "error": {"code": "conflict", "message": "Tenant already exists"}
+                },
             )
         tier = payload.tier or "free"
         tenant = Tenant(name=payload.tenant, tier=tier)
@@ -832,7 +901,10 @@ async def create_tenant(payload: CreateTenantRequest, request: Request):
 async def list_tenants(request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     db = get_session()
     try:
@@ -857,7 +929,10 @@ async def list_tenants(request: Request):
 async def audit_log(request: Request, limit: int = 50):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     safe_limit = max(1, min(limit, 200))
     db = get_session()
@@ -886,7 +961,9 @@ async def audit_log(request: Request, limit: int = 50):
                 actor=actor_name,
                 target_type=action_row.target_type,
                 target_id=action_row.target_id,
-                created_at=action_row.created_at.isoformat() if action_row.created_at else "",
+                created_at=action_row.created_at.isoformat()
+                if action_row.created_at
+                else "",
                 metadata=metadata,
             )
         )
@@ -895,10 +972,15 @@ async def audit_log(request: Request, limit: int = 50):
 
 
 @app.post("/v1/admin/tenants/{tenant_name}/keys", response_model=CreateKeyResponse)
-async def create_tenant_key(tenant_name: str, payload: CreateTenantKeyRequest, request: Request):
+async def create_tenant_key(
+    tenant_name: str, payload: CreateTenantKeyRequest, request: Request
+):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     raw_key = str(uuid.uuid4())
     key_hash = hash_api_key(raw_key)
@@ -918,7 +1000,9 @@ async def create_tenant_key(tenant_name: str, payload: CreateTenantKeyRequest, r
         if existing is not None:
             return JSONResponse(
                 status_code=409,
-                content={"error": {"code": "conflict", "message": "Key name already exists"}},
+                content={
+                    "error": {"code": "conflict", "message": "Key name already exists"}
+                },
             )
         db.add(
             ApiKey(
@@ -948,7 +1032,10 @@ async def create_tenant_key(tenant_name: str, payload: CreateTenantKeyRequest, r
 async def list_tenant_keys(tenant_name: str, request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     db = get_session()
     try:
@@ -987,16 +1074,25 @@ async def list_tenant_keys(tenant_name: str, request: Request):
 async def revoke_key(payload: RevokeKeyRequest, request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     key_hash = hash_api_key(payload.api_key)
     db = get_session()
     try:
-        api_key = db.query(ApiKey).filter(ApiKey.key_hash == key_hash, ApiKey.active.is_(True)).one_or_none()
+        api_key = (
+            db.query(ApiKey)
+            .filter(ApiKey.key_hash == key_hash, ApiKey.active.is_(True))
+            .one_or_none()
+        )
         if api_key is None:
             return JSONResponse(
                 status_code=404,
-                content={"error": {"code": "not_found", "message": "API key not found"}},
+                content={
+                    "error": {"code": "not_found", "message": "API key not found"}
+                },
             )
         api_key.active = False
         api_key.revoked_at = func.now()
@@ -1018,11 +1114,18 @@ async def revoke_key(payload: RevokeKeyRequest, request: Request):
     return RevokeKeyResponse(revoked=True, tenant=(tenant.name if tenant else None))
 
 
-@app.post("/v1/admin/tenants/{tenant_name}/keys/revoke", response_model=RevokeKeyResponse)
-async def revoke_key_by_name(tenant_name: str, payload: RevokeKeyByNameRequest, request: Request):
+@app.post(
+    "/v1/admin/tenants/{tenant_name}/keys/revoke", response_model=RevokeKeyResponse
+)
+async def revoke_key_by_name(
+    tenant_name: str, payload: RevokeKeyByNameRequest, request: Request
+):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     db = get_session()
     try:
@@ -1034,13 +1137,19 @@ async def revoke_key_by_name(tenant_name: str, payload: RevokeKeyByNameRequest, 
             )
         api_key = (
             db.query(ApiKey)
-            .filter(ApiKey.tenant_id == tenant.id, ApiKey.name == payload.name, ApiKey.active.is_(True))
+            .filter(
+                ApiKey.tenant_id == tenant.id,
+                ApiKey.name == payload.name,
+                ApiKey.active.is_(True),
+            )
             .one_or_none()
         )
         if api_key is None:
             return JSONResponse(
                 status_code=404,
-                content={"error": {"code": "not_found", "message": "API key not found"}},
+                content={
+                    "error": {"code": "not_found", "message": "API key not found"}
+                },
             )
         api_key.active = False
         api_key.revoked_at = func.now()
@@ -1065,7 +1174,10 @@ async def revoke_key_by_name(tenant_name: str, payload: RevokeKeyByNameRequest, 
 async def verify_key(payload: VerifyKeyRequest, request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     key_hash = hash_api_key(payload.api_key)
     db = get_session()
@@ -1084,7 +1196,9 @@ async def verify_key(payload: VerifyKeyRequest, request: Request):
         if api_key is None:
             return JSONResponse(
                 status_code=404,
-                content={"error": {"code": "not_found", "message": "API key not found"}},
+                content={
+                    "error": {"code": "not_found", "message": "API key not found"}
+                },
             )
         matches = api_key.key_hash == key_hash
         return VerifyKeyResponse(matches=matches, active=bool(api_key.active))
@@ -1096,7 +1210,10 @@ async def verify_key(payload: VerifyKeyRequest, request: Request):
 async def rotate_admin_key(request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     raw_key = str(uuid.uuid4())
     key_hash = hash_api_key(raw_key)
@@ -1106,12 +1223,14 @@ async def rotate_admin_key(request: Request):
         if admin_tenant is None:
             return JSONResponse(
                 status_code=404,
-                content={"error": {"code": "not_found", "message": "Admin tenant missing"}},
+                content={
+                    "error": {"code": "not_found", "message": "Admin tenant missing"}
+                },
             )
 
-        db.query(ApiKey).filter(ApiKey.tenant_id == admin_tenant.id, ApiKey.active.is_(True)).update(
-            {"active": False}
-        )
+        db.query(ApiKey).filter(
+            ApiKey.tenant_id == admin_tenant.id, ApiKey.active.is_(True)
+        ).update({"active": False})
         rotation_name = f"admin-rotated-{raw_key.split('-')[0]}"
         db.add(
             ApiKey(
@@ -1136,11 +1255,15 @@ async def rotate_admin_key(request: Request):
 
     return RotateAdminKeyResponse(admin_api_key=raw_key)
 
+
 @app.post("/v1/admin/limits", response_model=LimitsResponse)
 async def set_limits(payload: LimitsRequest, request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     db = get_session()
     try:
@@ -1181,7 +1304,10 @@ async def set_limits(payload: LimitsRequest, request: Request):
 async def reset_health(request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
     health_tracker.reset()
     return {"status": "ok"}
 
@@ -1190,7 +1316,10 @@ async def reset_health(request: Request):
 async def usage_summary(tenant_name: str, request: Request):
     admin_id = _get_admin_tenant_id()
     if admin_id is None or str(request.state.tenant_id) != str(admin_id):
-        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
 
     db = get_session()
     try:
@@ -1201,7 +1330,11 @@ async def usage_summary(tenant_name: str, request: Request):
                 content={"error": {"code": "not_found", "message": "Tenant not found"}},
             )
 
-        request_count = db.query(func.count(RequestModel.id)).filter(RequestModel.tenant_id == tenant.id).scalar()
+        request_count = (
+            db.query(func.count(RequestModel.id))
+            .filter(RequestModel.tenant_id == tenant.id)
+            .scalar()
+        )
         totals = (
             db.query(
                 func.coalesce(func.sum(UsageEvent.tokens), 0),
@@ -1220,11 +1353,24 @@ async def usage_summary(tenant_name: str, request: Request):
         cost_usd=float(totals[1] or 0.0),
     )
 
+
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"}:
+    if request.url.path in {
+        "/health",
+        "/metrics",
+        "/health/ollama",
+        "/health/grafana",
+        "/health/prometheus",
+    }:
         return await call_next(request)
-    if request.url.path in {"/", "/admin", "/tenants", "/keys", "/chat"} or request.url.path.startswith("/static"):
+    if request.url.path in {
+        "/",
+        "/admin",
+        "/tenants",
+        "/keys",
+        "/chat",
+    } or request.url.path.startswith("/static"):
         return await call_next(request)
 
     raw_key = None
@@ -1235,7 +1381,10 @@ async def api_key_auth(request: Request, call_next):
         raw_key = request.headers.get("X-API-Key")
 
     if not raw_key:
-        return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Missing API key"}})
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "unauthorized", "message": "Missing API key"}},
+        )
 
     key_hash = hash_api_key(raw_key)
     db = get_session()
@@ -1246,13 +1395,18 @@ async def api_key_auth(request: Request, call_next):
             .one_or_none()
         )
         if api_key_row is not None:
-            db.query(ApiKey).filter(ApiKey.id == api_key_row.id).update({"last_used_at": func.now()})
+            db.query(ApiKey).filter(ApiKey.id == api_key_row.id).update(
+                {"last_used_at": func.now()}
+            )
             db.commit()
     finally:
         db.close()
 
     if api_key_row is None:
-        return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Invalid API key"}})
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "unauthorized", "message": "Invalid API key"}},
+        )
 
     request.state.tenant_id = api_key_row.tenant_id
     return await call_next(request)
@@ -1260,17 +1414,24 @@ async def api_key_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def rate_limit_requests(request: Request, call_next):
-    if (
-        request.url.path
-        in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"}
-        or request.url.path.startswith("/v1/admin")
-    ):
+    if request.url.path in {
+        "/health",
+        "/metrics",
+        "/health/ollama",
+        "/health/grafana",
+        "/health/prometheus",
+    } or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
     if redis_client is None:
         return JSONResponse(
             status_code=503,
-            content={"error": {"code": "rate_limit_unavailable", "message": "Redis unavailable"}},
+            content={
+                "error": {
+                    "code": "rate_limit_unavailable",
+                    "message": "Redis unavailable",
+                }
+            },
         )
 
     tenant_id = getattr(request.state, "tenant_id", "unknown")
@@ -1287,7 +1448,9 @@ async def rate_limit_requests(request: Request, call_next):
         return JSONResponse(
             status_code=429,
             headers={"Retry-After": str(retry_after)},
-            content={"error": {"code": "rate_limited", "message": "Request limit exceeded"}},
+            content={
+                "error": {"code": "rate_limited", "message": "Request limit exceeded"}
+            },
         )
 
     token_estimate = 2
@@ -1302,7 +1465,9 @@ async def rate_limit_requests(request: Request, call_next):
         return JSONResponse(
             status_code=429,
             headers={"Retry-After": str(retry_after)},
-            content={"error": {"code": "rate_limited", "message": "Token limit exceeded"}},
+            content={
+                "error": {"code": "rate_limited", "message": "Token limit exceeded"}
+            },
         )
 
     return await call_next(request)
@@ -1310,11 +1475,13 @@ async def rate_limit_requests(request: Request, call_next):
 
 @app.middleware("http")
 async def quota_limits(request: Request, call_next):
-    if (
-        request.url.path
-        in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"}
-        or request.url.path.startswith("/v1/admin")
-    ):
+    if request.url.path in {
+        "/health",
+        "/metrics",
+        "/health/ollama",
+        "/health/grafana",
+        "/health/prometheus",
+    } or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
     tenant_id = getattr(request.state, "tenant_id", None)
@@ -1327,7 +1494,10 @@ async def quota_limits(request: Request, call_next):
         if tenant is None:
             return await call_next(request)
 
-        if tenant.token_limit_per_day is None and tenant.spend_limit_per_day_usd is None:
+        if (
+            tenant.token_limit_per_day is None
+            and tenant.spend_limit_per_day_usd is None
+        ):
             return await call_next(request)
 
         today = func.date(func.now())
@@ -1352,18 +1522,30 @@ async def quota_limits(request: Request, call_next):
                 return JSONResponse(
                     status_code=429,
                     headers=warn_headers,
-                    content={"error": {"code": "quota_exceeded", "message": "Daily token budget exceeded"}},
+                    content={
+                        "error": {
+                            "code": "quota_exceeded",
+                            "message": "Daily token budget exceeded",
+                        }
+                    },
                 )
 
         if tenant.spend_limit_per_day_usd:
             remaining_spend = tenant.spend_limit_per_day_usd - cost_used
-            warn_headers["X-RateLimit-Spend-Remaining"] = f"{max(remaining_spend, 0):.6f}"
+            warn_headers["X-RateLimit-Spend-Remaining"] = (
+                f"{max(remaining_spend, 0):.6f}"
+            )
             if remaining_spend <= 0:
                 QUOTA_DENIED_TOTAL.labels("spend_limit").inc()
                 return JSONResponse(
                     status_code=429,
                     headers=warn_headers,
-                    content={"error": {"code": "quota_exceeded", "message": "Daily spend budget exceeded"}},
+                    content={
+                        "error": {
+                            "code": "quota_exceeded",
+                            "message": "Daily spend budget exceeded",
+                        }
+                    },
                 )
 
         response = await call_next(request)
@@ -1396,7 +1578,10 @@ async def log_requests(request: Request, call_next):
         logger.info(json.dumps(payload, separators=(",", ":")))
 
     if response is None:
-        return JSONResponse(status_code=500, content={"error": {"code": "internal_error", "message": "Unhandled error"}})
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"code": "internal_error", "message": "Unhandled error"}},
+        )
 
     response.headers["X-Request-Id"] = request_id
     if idempotency_key:
