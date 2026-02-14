@@ -1,0 +1,14 @@
+1. Define the scope and success criteria for the senior-credible upgrade (RAG, eval gating, observability/reliability).
+2. Document current architecture and identify insertion points.
+3. Add a vector store (pgvector or Qdrant) and design the data model for documents, chunks, and embeddings.
+4. Build an ingestion pipeline: chunking, embeddings, metadata, and storage.
+5. Implement retrieval + reranking and wire RAG into /v1/chat with a safe fallback when the vector store is unavailable.
+6. Add RAG metrics (hit rate proxy, retrieval latency, token/cost impact) and dashboards.
+7. Create a small evaluation dataset (20–50 prompts) with expected answers or scoring rules.
+8. Build an offline eval runner and integrate quality/cost/latency checks into CI.
+9. Implement provider reliability: retries with backoff, circuit breaker, and per-provider error metrics.
+10. Add OpenTelemetry tracing across request ? routing ? provider and expose traces.
+11. Write runbooks: how to ingest docs, run evals, and debug RAG failures.
+12. Add tests: unit tests for RAG pipeline, integration tests for retrieval, and regression tests for eval gating.
+13. Polish configuration and environment variables (document all new settings).
+14. Update README with architecture diagram and setup instructions.

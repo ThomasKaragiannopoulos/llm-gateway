@@ -44,5 +44,8 @@ jobs:
       - name: Run tests
         run: poetry run pytest -q
 
+      - name: Run evals
+        run: poetry run python evals/run_eval.py --mode fixture
+
       - name: Build Docker image
         run: docker build -t llm-gateway:ci .

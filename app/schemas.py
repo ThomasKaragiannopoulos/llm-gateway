@@ -145,3 +145,43 @@ class UsageSummaryResponse(BaseModel):
     requests: int
     tokens: int
     cost_usd: float
+
+
+class RagSettingsRequest(BaseModel):
+    enabled: bool | None = None
+    top_k: int | None = Field(default=None, gt=0, le=20)
+    max_context_chars: int | None = Field(default=None, gt=0, le=20000)
+    rerank: bool | None = None
+
+
+class RagSettingsResponse(BaseModel):
+    enabled: bool
+    top_k: int
+    max_context_chars: int
+    rerank: bool
+
+
+class RagIngestRequest(BaseModel):
+    tenant: str = Field(min_length=1, default="default")
+    source: str | None = Field(default="ui")
+    source_id: str | None = None
+    title: str | None = None
+    content: str = Field(min_length=1)
+    chunk_size: int = Field(default=1000, gt=0, le=5000)
+    overlap: int = Field(default=200, ge=0, le=1000)
+
+
+class RagIngestResponse(BaseModel):
+    document_id: str
+    chunks: int
+
+
+class EvalRunRequest(BaseModel):
+    dataset_path: str | None = Field(default="evals/dataset.jsonl")
+    min_accuracy: float | None = Field(default=0.6, ge=0, le=1)
+    max_p95_latency_ms: int | None = Field(default=2000, gt=0)
+    max_avg_cost_usd: float | None = Field(default=0.01, ge=0)
+
+
+class EvalRunResponse(BaseModel):
+    summary: dict

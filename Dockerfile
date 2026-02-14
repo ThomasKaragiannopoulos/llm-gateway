@@ -14,6 +14,8 @@ RUN poetry install --no-interaction --no-ansi --only main
 COPY app ./app
 COPY frontend ./frontend
 COPY alembic ./alembic
+COPY evals ./evals
+COPY runbooks ./runbooks
 COPY alembic.ini ./alembic.ini
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh

@@ -9,6 +9,7 @@ services:
       PROVIDER_MODE: ollama
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: tinyllama:latest
+      RAG_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://llm:llm@postgres:5432/llm_gateway
     depends_on:
@@ -16,7 +17,7 @@ services:
       - redis
 
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: llm-postgres
     environment:
       POSTGRES_USER: llm
