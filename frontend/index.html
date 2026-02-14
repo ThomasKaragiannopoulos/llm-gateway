@@ -88,11 +88,64 @@
         </div>
       </section>
 
+      <section class="panel">
+        <h2>Grafana</h2>
+        <p class="muted">Dashboards for latency, quota, and request volume.</p>
+        <div class="row">
+          <a class="primary button-link" href="http://localhost:3000" target="_blank" rel="noreferrer">Open Grafana</a>
+        </div>
+        <div class="health-inline">
+          <span class="health-chip" id="grafana-health">Grafana: checking...</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Prometheus</h2>
+        <p class="muted">Raw metrics and scrape status.</p>
+        <div class="row">
+          <a class="primary button-link" href="http://localhost:9090" target="_blank" rel="noreferrer">Open Prometheus</a>
+        </div>
+        <div class="health-inline">
+          <span class="health-chip" id="prometheus-health">Prometheus: checking...</span>
+        </div>
+      </section>
+
     </main>
 
     <footer class="site-footer">
       <div>LLM Gateway - Admin Console</div>
       <div>Designed as a senior AI systems portfolio artifact.</div>
     </footer>
+
+    <script>
+      const updateChip = (el, ok, label) => {
+        if (!el) return;
+        el.textContent = `${label}: ${ok ? "ok" : "down"}`;
+        el.dataset.state = ok ? "ok" : "error";
+      };
+
+      const checkGrafana = async () => {
+        const el = document.getElementById("grafana-health");
+        try {
+          const resp = await fetch("/health/grafana");
+          updateChip(el, resp.ok, "Grafana");
+        } catch (err) {
+          updateChip(el, false, "Grafana");
+        }
+      };
+
+      const checkPrometheus = async () => {
+        const el = document.getElementById("prometheus-health");
+        try {
+          const resp = await fetch("/health/prometheus");
+          updateChip(el, resp.ok, "Prometheus");
+        } catch (err) {
+          updateChip(el, false, "Prometheus");
+        }
+      };
+
+      checkGrafana();
+      checkPrometheus();
+    </script>
   </body>
 </html>

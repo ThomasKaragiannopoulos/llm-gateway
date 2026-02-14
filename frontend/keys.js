@@ -45,14 +45,14 @@ const renderTenantOptions = (tenants, selects, emptyMessage = "No tenants found"
   });
 };
 
-const renderKeyNameOptions = (keys, select) => {
+const renderKeyNameOptions = (keys, select, emptyMessage = "No keys found") => {
   if (!select) {
     return;
   }
   select.innerHTML = "";
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = keys.length ? "Select key" : "No keys found";
+  placeholder.textContent = keys.length ? "Select key" : emptyMessage;
   select.appendChild(placeholder);
   keys.forEach((key) => {
     const option = document.createElement("option");
@@ -63,23 +63,30 @@ const renderKeyNameOptions = (keys, select) => {
 };
 
 const loadTenants = async () => {
-  renderTenantOptions([], [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant], "Loading...");
+  renderTenantOptions(
+    [],
+    [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant, keyElements.revokeTenant],
+    "Loading..."
+  );
   try {
     const result = await apiFetch("/v1/admin/tenants", { method: "GET" });
     const tenants = (result.tenants || []).map((t) => t.tenant).sort();
-    renderTenantOptions(tenants, [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant]);
+    renderTenantOptions(
+      tenants,
+      [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant, keyElements.revokeTenant]
+    );
   } catch (err) {
     renderTenantOptions(
       [],
-      [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant],
+      [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant, keyElements.revokeTenant],
       "No session. Save admin key."
     );
   }
 };
 
-const loadKeyNamesForTenant = async (tenant) => {
+const loadKeyNamesForTenant = async (tenant, select, emptyMessage) => {
   if (!tenant) {
-    renderKeyNameOptions([], keyElements.importKeyName);
+    renderKeyNameOptions([], select, emptyMessage);
     return;
   }
   try {
@@ -87,9 +94,9 @@ const loadKeyNamesForTenant = async (tenant) => {
       method: "GET",
     });
     const names = (result.keys || []).filter((k) => k.active).map((k) => k.name).sort();
-    renderKeyNameOptions(names, keyElements.importKeyName);
+    renderKeyNameOptions(names, select, emptyMessage);
   } catch (err) {
-    renderKeyNameOptions([], keyElements.importKeyName);
+    renderKeyNameOptions([], select, emptyMessage);
   }
 };
 
@@ -138,10 +145,11 @@ keyElements.clearSettings?.addEventListener("click", () => {
   }
   renderTenantOptions(
     [],
-    [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant],
+    [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant, keyElements.revokeTenant],
     "No session. Save admin key."
   );
-  renderKeyNameOptions([], keyElements.importKeyName);
+  renderKeyNameOptions([], keyElements.importKeyName, "No session. Save admin key.");
+  renderKeyNameOptions([], keyElements.revokeKeyName, "No session. Save admin key.");
 });
 
 keyElements.createKey?.addEventListener("click", async () => {
@@ -268,7 +276,12 @@ keyElements.revokeKeyBtn?.addEventListener("click", async () => {
 
 keyElements.importTenant?.addEventListener("change", () => {
   const tenant = keyElements.importTenant.value.trim();
-  loadKeyNamesForTenant(tenant);
+  loadKeyNamesForTenant(tenant, keyElements.importKeyName, "No keys found");
+});
+
+keyElements.revokeTenant?.addEventListener("change", () => {
+  const tenant = keyElements.revokeTenant.value.trim();
+  loadKeyNamesForTenant(tenant, keyElements.revokeKeyName, "No keys found");
 });
 
 keyElements.importKeyBtn?.addEventListener("click", async () => {
@@ -309,4 +322,5 @@ loadSettings();
 updateEnvPill(keyElements.envPill);
 renderKeyList(keyElements.keyList);
 loadTenants();
-loadKeyNamesForTenant(keyElements.importTenant?.value || "");
+loadKeyNamesForTenant(keyElements.importTenant?.value || "", keyElements.importKeyName, "No keys found");
+loadKeyNamesForTenant(keyElements.revokeTenant?.value || "", keyElements.revokeKeyName, "No keys found");
