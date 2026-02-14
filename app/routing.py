@@ -53,6 +53,13 @@ class RoutingPolicy:
             reason = "tier:free"
 
         if health.error_rate(primary) > self.error_rate_threshold:
-            return RouteDecision(model=model, provider=fallback, reason="primary_unhealthy", fallback_provider=primary)
+            return RouteDecision(
+                model=model,
+                provider=fallback,
+                reason="primary_unhealthy",
+                fallback_provider=primary,
+            )
 
-        return RouteDecision(model=model, provider=primary, reason=reason, fallback_provider=fallback)
+        return RouteDecision(
+            model=model, provider=primary, reason=reason, fallback_provider=fallback
+        )

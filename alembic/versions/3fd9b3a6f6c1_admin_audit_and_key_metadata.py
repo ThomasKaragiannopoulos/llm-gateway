@@ -5,6 +5,7 @@ Revises: 9c2d6a0a3f2b
 Create Date: 2026-02-11 12:40:00.000000
 
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -19,9 +20,15 @@ depends_on = None
 
 def upgrade() -> None:
     op.add_column("api_keys", sa.Column("created_by", sa.Uuid(), nullable=True))
-    op.add_column("api_keys", sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("api_keys", sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("api_keys", sa.Column("revoked_reason", sa.String(length=300), nullable=True))
+    op.add_column(
+        "api_keys", sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    op.add_column(
+        "api_keys", sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    op.add_column(
+        "api_keys", sa.Column("revoked_reason", sa.String(length=300), nullable=True)
+    )
     op.create_foreign_key(
         "fk_api_keys_created_by",
         "api_keys",
@@ -37,7 +44,12 @@ def upgrade() -> None:
         sa.Column("target_type", sa.String(length=80), nullable=False),
         sa.Column("target_id", sa.String(length=120), nullable=True),
         sa.Column("metadata_json", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["actor_tenant_id"], ["tenants.id"]),
     )
     op.create_index("ix_admin_actions_actor", "admin_actions", ["actor_tenant_id"])
