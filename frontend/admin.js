@@ -69,6 +69,10 @@ adminElements.rotateAdmin?.addEventListener("click", async () => {
       "warn"
     );
   } catch (err) {
+    if (err?.status === 401) {
+      setStatus(adminElements.sessionStatus, "Invalid admin key.", "error");
+      return;
+    }
     setStatus(adminElements.sessionStatus, err.message, "error");
   }
 });

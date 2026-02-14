@@ -113,6 +113,17 @@ class RevokeKeyResponse(BaseModel):
     tenant: str | None = None
 
 
+class VerifyKeyRequest(BaseModel):
+    tenant: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+
+
+class VerifyKeyResponse(BaseModel):
+    matches: bool
+    active: bool
+
+
 class RotateAdminKeyResponse(BaseModel):
     admin_api_key: str
 

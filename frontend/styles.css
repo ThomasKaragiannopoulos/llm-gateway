@@ -45,6 +45,8 @@ body {
   padding: 32px 6vw 16px;
   position: relative;
   z-index: 1;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .brand {
@@ -84,6 +86,44 @@ body {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--stroke);
   color: var(--warn);
+}
+
+.site-nav {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  background: rgba(9, 13, 20, 0.6);
+  border: 1px solid var(--stroke);
+  padding: 6px;
+  border-radius: 999px;
+  box-shadow: 0 12px 30px rgba(3, 8, 15, 0.35);
+}
+
+.site-nav a {
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 0.02em;
+  transition: border 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.site-nav a:hover {
+  color: var(--text);
+  border-color: rgba(32, 201, 151, 0.25);
+  background: rgba(32, 201, 151, 0.08);
+}
+
+.site-nav a.active {
+  color: var(--text);
+  border-color: rgba(32, 201, 151, 0.55);
+  background: linear-gradient(135deg, rgba(32, 201, 151, 0.25), rgba(32, 201, 151, 0.05));
+  box-shadow: 0 10px 24px rgba(32, 201, 151, 0.2);
 }
 
 .hero {

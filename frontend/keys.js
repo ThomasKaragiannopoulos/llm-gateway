@@ -13,12 +13,84 @@ const keyElements = {
   listKeys: document.getElementById("list-keys"),
   tenantKeys: document.getElementById("tenant-keys"),
   keysStatus: document.getElementById("keys-status"),
+  importTenant: document.getElementById("import-tenant"),
+  importKeyName: document.getElementById("import-key-name"),
+  importKeyValue: document.getElementById("import-key-value"),
+  importKeyBtn: document.getElementById("import-key-btn"),
+  importStatus: document.getElementById("import-status"),
   revokeTenant: document.getElementById("revoke-tenant"),
   revokeKeyName: document.getElementById("revoke-key-name"),
   revokeReason: document.getElementById("revoke-reason"),
   revokeKeyBtn: document.getElementById("revoke-key-btn"),
   revokeStatus: document.getElementById("revoke-status"),
   keyList: document.getElementById("key-list"),
+};
+
+const renderTenantOptions = (tenants, selects, emptyMessage = "No tenants found") => {
+  selects.forEach((select) => {
+    if (!select) {
+      return;
+    }
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = tenants.length ? "Select tenant" : emptyMessage;
+    select.appendChild(placeholder);
+    tenants.forEach((tenant) => {
+      const option = document.createElement("option");
+      option.value = tenant;
+      option.textContent = tenant;
+      select.appendChild(option);
+    });
+  });
+};
+
+const renderKeyNameOptions = (keys, select) => {
+  if (!select) {
+    return;
+  }
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = keys.length ? "Select key" : "No keys found";
+  select.appendChild(placeholder);
+  keys.forEach((key) => {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = key;
+    select.appendChild(option);
+  });
+};
+
+const loadTenants = async () => {
+  renderTenantOptions([], [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant], "Loading...");
+  try {
+    const result = await apiFetch("/v1/admin/tenants", { method: "GET" });
+    const tenants = (result.tenants || []).map((t) => t.tenant).sort();
+    renderTenantOptions(tenants, [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant]);
+  } catch (err) {
+    renderTenantOptions(
+      [],
+      [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant],
+      "No session. Save admin key."
+    );
+  }
+};
+
+const loadKeyNamesForTenant = async (tenant) => {
+  if (!tenant) {
+    renderKeyNameOptions([], keyElements.importKeyName);
+    return;
+  }
+  try {
+    const result = await apiFetch(`/v1/admin/tenants/${encodeURIComponent(tenant)}/keys`, {
+      method: "GET",
+    });
+    const names = (result.keys || []).filter((k) => k.active).map((k) => k.name).sort();
+    renderKeyNameOptions(names, keyElements.importKeyName);
+  } catch (err) {
+    renderKeyNameOptions([], keyElements.importKeyName);
+  }
 };
 
 const runHealthCheck = async () => {
@@ -52,6 +124,7 @@ const runHealthCheck = async () => {
 keyElements.saveSettings?.addEventListener("click", async () => {
   saveSettings(keyElements.sessionStatus, keyElements.envPill);
   await runHealthCheck();
+  await loadTenants();
 });
 
 keyElements.clearSettings?.addEventListener("click", () => {
@@ -63,6 +136,12 @@ keyElements.clearSettings?.addEventListener("click", () => {
   if (keyElements.copyLatest) {
     keyElements.copyLatest.disabled = true;
   }
+  renderTenantOptions(
+    [],
+    [keyElements.keyTenant, keyElements.listTenant, keyElements.importTenant],
+    "No session. Save admin key."
+  );
+  renderKeyNameOptions([], keyElements.importKeyName);
 });
 
 keyElements.createKey?.addEventListener("click", async () => {
@@ -187,6 +266,47 @@ keyElements.revokeKeyBtn?.addEventListener("click", async () => {
   }
 });
 
+keyElements.importTenant?.addEventListener("change", () => {
+  const tenant = keyElements.importTenant.value.trim();
+  loadKeyNamesForTenant(tenant);
+});
+
+keyElements.importKeyBtn?.addEventListener("click", async () => {
+  const tenant = keyElements.importTenant.value.trim();
+  const name = keyElements.importKeyName.value.trim();
+  const apiKey = keyElements.importKeyValue.value.trim();
+  if (!tenant || !name || !apiKey) {
+    setStatus(keyElements.importStatus, "Tenant, key name, and key value are required.", "warn");
+    return;
+  }
+  try {
+    const result = await apiFetch("/v1/admin/keys/verify", {
+      method: "POST",
+      body: JSON.stringify({ tenant, name, api_key: apiKey }),
+    });
+    if (!result.matches) {
+      setStatus(keyElements.importStatus, "Key verification failed.", "error");
+      return;
+    }
+    const keys = JSON.parse(localStorage.getItem(KEYS_KEY) || "[]");
+    const updated = keys.filter((item) => !(item.tenant === tenant && item.name === name));
+    updated.unshift({
+      tenant,
+      name,
+      apiKey,
+      createdAt: Date.now(),
+      active: true,
+    });
+    localStorage.setItem(KEYS_KEY, JSON.stringify(updated.slice(0, 12)));
+    renderKeyList(keyElements.keyList);
+    setStatus(keyElements.importStatus, "Key verified and stored locally.", "ok");
+  } catch (err) {
+    setStatus(keyElements.importStatus, err.message, "error");
+  }
+});
+
 loadSettings();
 updateEnvPill(keyElements.envPill);
 renderKeyList(keyElements.keyList);
+loadTenants();
+loadKeyNamesForTenant(keyElements.importTenant?.value || "");

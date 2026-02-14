@@ -137,7 +137,7 @@ const renderKeyOptions = (tenant, keys) => {
   } else if (tenant === ALL_TENANTS_VALUE) {
     keyPlaceholder.textContent = keys.length ? "Select a stored key" : "No active keys found";
   } else {
-    keyPlaceholder.textContent = keys.length ? "Select a stored key" : "No active keys for tenant";
+    keyPlaceholder.textContent = keys.length ? "Select a stored key" : "No stored keys for tenant";
   }
   keySelect.appendChild(keyPlaceholder);
 
