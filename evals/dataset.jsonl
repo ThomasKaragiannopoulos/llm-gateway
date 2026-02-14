@@ -1,0 +1,20 @@
+{"id": "eval-01", "prompt": "What is HTTP status code 404?", "expected_contains": ["404", "not found"], "expected_answer": "HTTP 404 means not found."}
+{"id": "eval-02", "prompt": "Name two common HTTP methods used in REST APIs.", "expected_contains": ["get", "post"], "expected_answer": "GET and POST are common HTTP methods."}
+{"id": "eval-03", "prompt": "What does SQL stand for?", "expected_contains": ["structured", "query", "language"], "expected_answer": "SQL stands for Structured Query Language."}
+{"id": "eval-04", "prompt": "Give a one-line definition of a circuit breaker in software.", "expected_contains": ["failure", "open"], "expected_answer": "A circuit breaker trips open after failures to prevent cascading errors."}
+{"id": "eval-05", "prompt": "What is the purpose of caching in an API gateway?", "expected_contains": ["reduce", "latency"], "expected_answer": "Caching reduces latency and repeated computation."}
+{"id": "eval-06", "prompt": "Explain in one sentence what RAG means.", "expected_contains": ["retrieval", "generation"], "expected_answer": "RAG combines retrieval with generation to answer questions."}
+{"id": "eval-07", "prompt": "What is a vector embedding?", "expected_contains": ["vector", "representation"], "expected_answer": "A vector embedding is a numeric vector representation of data."}
+{"id": "eval-08", "prompt": "Give one reason to use OpenTelemetry.", "expected_contains": ["tracing"], "expected_answer": "OpenTelemetry provides distributed tracing."}
+{"id": "eval-09", "prompt": "What is the primary goal of a rate limiter?", "expected_contains": ["limit", "requests"], "expected_answer": "To limit the number of requests over time."}
+{"id": "eval-10", "prompt": "What does JSON stand for?", "expected_contains": ["javascript", "object", "notation"], "expected_answer": "JSON is JavaScript Object Notation."}
+{"id": "eval-11", "prompt": "What is a 3rd percentile?", "expected_contains": ["percentile"], "expected_answer": "A percentile is a value below which a percentage of observations fall."}
+{"id": "eval-12", "prompt": "Name a benefit of batching embeddings.", "expected_contains": ["throughput"], "expected_answer": "Batching improves throughput."}
+{"id": "eval-13", "prompt": "Why is idempotency useful for retries?", "expected_contains": ["safe", "repeat"], "expected_answer": "It makes repeats safe because the result is the same."}
+{"id": "eval-14", "prompt": "Define p95 latency in one sentence.", "expected_contains": ["95"], "expected_answer": "p95 latency is the value below which 95% of requests complete."}
+{"id": "eval-15", "prompt": "What does TTL mean in caching?", "expected_contains": ["time", "live"], "expected_answer": "TTL means time to live."}
+{"id": "eval-16", "prompt": "What is the purpose of a UUID?", "expected_contains": ["unique"], "expected_answer": "A UUID is a globally unique identifier."}
+{"id": "eval-17", "prompt": "What is the role of a fallback provider?", "expected_contains": ["backup"], "expected_answer": "A fallback provider is a backup when the primary fails."}
+{"id": "eval-18", "prompt": "Give one example of a monitoring tool.", "expected_contains": ["prometheus"], "expected_answer": "Prometheus is a monitoring tool."}
+{"id": "eval-19", "prompt": "Why use a vector store for RAG?", "expected_contains": ["similarity"], "expected_answer": "Vector stores enable similarity search for relevant context."}
+{"id": "eval-20", "prompt": "What is a chunk in document processing?", "expected_contains": ["segment"], "expected_answer": "A chunk is a segment of a larger document."}

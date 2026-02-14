@@ -23,6 +23,8 @@ from app.auth import hash_api_key
 from app.db.models import (
     AdminAction,
     ApiKey,
+    Document,
+    DocumentChunk,
     Request as RequestModel,
     Tenant,
     UsageEvent,
@@ -33,9 +35,16 @@ from app.ollama_provider import OllamaProvider
 from app.pricing import cost_usd
 from app.provider import StreamChunk
 from app.routing import ProviderHealth, RoutingPolicy
+from app.reliability import CircuitBreaker, ResilientProvider, RetryConfig
+from app.otel import setup_tracing
+from app.rag.embeddings import get_embedding_client
+from app.rag.chunking import chunk_text
+from app.rag.retrieval import retrieve_chunks
+from app.rag.rerank import rerank
 from app.schemas import (
     ChatRequest,
     ChatResponse,
+    ChatMessage,
     CreateKeyRequest,
     CreateKeyResponse,
     CreateTenantKeyRequest,
@@ -45,9 +54,15 @@ from app.schemas import (
     ListTenantsResponse,
     AdminAuditResponse,
     AdminActionEntry,
+    EvalRunRequest,
+    EvalRunResponse,
     RevokeKeyByNameRequest,
     RevokeKeyRequest,
     RevokeKeyResponse,
+    RagIngestRequest,
+    RagIngestResponse,
+    RagSettingsRequest,
+    RagSettingsResponse,
     VerifyKeyRequest,
     VerifyKeyResponse,
     LimitsRequest,
@@ -79,6 +94,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="llm-gateway", lifespan=lifespan)
+setup_tracing(app)
 frontend_root = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "frontend")
 )
@@ -95,20 +111,71 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 GRAFANA_URL = os.getenv("GRAFANA_URL", "http://grafana:3000")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
 PROVIDER_MODE = os.getenv("PROVIDER_MODE", "mock")
+PROVIDER_RETRIES = int(os.getenv("PROVIDER_RETRIES", "2"))
+PROVIDER_RETRY_BASE_MS = int(os.getenv("PROVIDER_RETRY_BASE_MS", "200"))
+PROVIDER_RETRY_MAX_MS = int(os.getenv("PROVIDER_RETRY_MAX_MS", "2000"))
+CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("CIRCUIT_FAILURE_THRESHOLD", "5"))
+CIRCUIT_RESET_SECONDS = int(os.getenv("CIRCUIT_RESET_SECONDS", "30"))
+
+
+def _provider_error(provider_name: str, stage: str, exc: Exception) -> None:
+    PROVIDER_ERRORS_TOTAL.labels(provider_name, stage, exc.__class__.__name__).inc()
+
+
+def _provider_retry(provider_name: str, stage: str, attempt: int) -> None:
+    PROVIDER_RETRIES_TOTAL.labels(provider_name, stage).inc()
+
+
+def _provider_circuit_open(provider_name: str) -> None:
+    PROVIDER_CIRCUIT_OPEN_TOTAL.labels(provider_name).inc()
+
+
+retry_config = RetryConfig(
+    max_attempts=PROVIDER_RETRIES,
+    base_delay_ms=PROVIDER_RETRY_BASE_MS,
+    max_delay_ms=PROVIDER_RETRY_MAX_MS,
+)
+
+
+def _wrap_provider(name: str, provider):
+    breaker = CircuitBreaker(
+        failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+        reset_timeout_s=CIRCUIT_RESET_SECONDS,
+    )
+    return ResilientProvider(
+        provider,
+        name=name,
+        retry=retry_config,
+        circuit_breaker=breaker,
+        on_error=_provider_error,
+        on_retry=_provider_retry,
+        on_circuit_open=_provider_circuit_open,
+    )
+
+
 if PROVIDER_MODE == "ollama":
-    providers = {
+    base_providers = {
         "primary": OllamaProvider(base_url=OLLAMA_URL),
         "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
     }
 else:
-    providers = {
+    base_providers = {
         "primary": MockProvider(delay_ms=200, fail_rate=PRIMARY_FAIL_RATE),
         "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
     }
+
+providers = {name: _wrap_provider(name, provider) for name, provider in base_providers.items()}
 HEALTH_MIN_SAMPLES = int(os.getenv("HEALTH_MIN_SAMPLES", "5"))
 HEALTH_ERROR_THRESHOLD = float(os.getenv("HEALTH_ERROR_THRESHOLD", "0.5"))
 health_tracker = ProviderHealth(window_size=50, min_samples=HEALTH_MIN_SAMPLES)
 routing_policy = RoutingPolicy(error_rate_threshold=HEALTH_ERROR_THRESHOLD)
+
+RAG_ENABLED = os.getenv("RAG_ENABLED", "false").lower() == "true"
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "4"))
+RAG_MAX_CONTEXT_CHARS = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "4000"))
+RAG_RERANK = os.getenv("RAG_RERANK", "true").lower() == "true"
+embedding_client = get_embedding_client()
+
 redis_client: Redis | None = None
 
 REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "60"))
@@ -152,6 +219,22 @@ FALLBACK_TOTAL = Counter(
     "Total fallbacks",
     ["reason", "from_provider", "to_provider"],
 )
+
+PROVIDER_ERRORS_TOTAL = Counter(
+    "provider_errors_total",
+    "Total provider errors",
+    ["provider", "stage", "error_type"],
+)
+PROVIDER_RETRIES_TOTAL = Counter(
+    "provider_retries_total",
+    "Total provider retries",
+    ["provider", "stage"],
+)
+PROVIDER_CIRCUIT_OPEN_TOTAL = Counter(
+    "provider_circuit_open_total",
+    "Total provider circuit open events",
+    ["provider"],
+)
 QUOTA_DENIED_TOTAL = Counter(
     "quota_denied_total",
     "Total requests denied due to budget/quota",
@@ -178,6 +261,26 @@ CACHE_MISSES_TOTAL = Counter(
     ["tenant", "model"],
 )
 
+
+RAG_RETRIEVAL_TOTAL = Counter(
+    "rag_retrieval_total",
+    "Total RAG retrieval attempts",
+    ["status"],
+)
+RAG_RETRIEVAL_LATENCY = Histogram(
+    "rag_retrieval_latency_seconds",
+    "RAG retrieval latency in seconds",
+)
+RAG_CONTEXT_CHUNKS_TOTAL = Counter(
+    "rag_context_chunks_total",
+    "Total RAG context chunks used",
+    ["tenant"],
+)
+RAG_CONTEXT_TOKENS_TOTAL = Counter(
+    "rag_context_tokens_total",
+    "Total estimated tokens added by RAG context",
+    ["tenant"],
+)
 
 @app.get("/health")
 def health():
@@ -326,7 +429,19 @@ def _get_admin_tenant_id():
         db.close()
 
 
+def _require_admin(request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(getattr(request.state, "tenant_id", "")) != str(admin_id):
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"code": "forbidden", "message": "Admin only"}},
+        )
+    return None
+
+
 def _cacheable_request(payload: ChatRequest) -> bool:
+    if RAG_ENABLED:
+        return False
     if payload.stream:
         return False
     if payload.temperature not in (None, 0):
@@ -348,9 +463,113 @@ def _estimate_tokens(messages: list, content: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _extract_query(messages: list[ChatMessage]) -> str:
+    for message in reversed(messages):
+        if message.role == "user":
+            return message.content
+    return messages[-1].content
+
+
+def _build_rag_context(chunks: list[dict]) -> str:
+    if not chunks:
+        return ""
+    lines = [
+        "You are given context snippets from internal documents.",
+        "Use them when relevant. If not relevant, answer normally.",
+        "",
+        "Context:",
+    ]
+    for idx, chunk in enumerate(chunks, start=1):
+        content = chunk.get("content", "").strip()
+        if not content:
+            continue
+        lines.append(f"[{idx}] {content}")
+    return "\n".join(lines)
+
+
+def _maybe_apply_rag(db, tenant, payload: ChatRequest):
+    if not RAG_ENABLED:
+        RAG_RETRIEVAL_TOTAL.labels("bypass").inc()
+        return payload, "bypass", 0, 0
+    query = _extract_query(payload.messages)
+    start = time.perf_counter()
+    try:
+        chunks = retrieve_chunks(db, embedding_client, str(tenant.id), query, RAG_TOP_K)
+        chunk_dicts = [
+            {
+                "content": c.content,
+                "score": c.score,
+                "source": c.source,
+                "source_id": c.source_id,
+                "title": c.title,
+                "metadata": c.metadata,
+                "chunk_index": c.chunk_index,
+            }
+            for c in chunks
+        ]
+        if RAG_RERANK:
+            chunk_dicts = rerank(query, chunk_dicts, RAG_TOP_K)
+        if not chunk_dicts:
+            RAG_RETRIEVAL_TOTAL.labels("miss").inc()
+            return payload, "miss", 0, 0
+        context = _build_rag_context(chunk_dicts)
+        if RAG_MAX_CONTEXT_CHARS > 0:
+            context = context[:RAG_MAX_CONTEXT_CHARS]
+        if not context:
+            RAG_RETRIEVAL_TOTAL.labels("miss").inc()
+            return payload, "miss", 0, 0
+        rag_message = ChatMessage(role="system", content=context)
+        new_messages = [rag_message] + payload.messages
+        est_tokens = max(1, len(context) // 4)
+        RAG_CONTEXT_CHUNKS_TOTAL.labels(tenant.name).inc(len(chunk_dicts))
+        RAG_CONTEXT_TOKENS_TOTAL.labels(tenant.name).inc(est_tokens)
+        RAG_RETRIEVAL_TOTAL.labels("hit").inc()
+        return payload.model_copy(update={"messages": new_messages}), "hit", est_tokens, len(chunk_dicts)
+    except Exception as exc:
+        logger.warning(json.dumps({"message": "rag_retrieval_failed", "error": str(exc)}))
+        RAG_RETRIEVAL_TOTAL.labels("error").inc()
+        return payload, "error", 0, 0
+    finally:
+        RAG_RETRIEVAL_LATENCY.observe(time.perf_counter() - start)
+
+
 def _format_sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
+
+def _score_response(response: str, expected_contains: list[str]) -> bool:
+    text = response.lower()
+    return all(token.lower() in text for token in expected_contains)
+
+
+def _load_eval_cases(dataset_path: str) -> list[dict]:
+    cases: list[dict] = []
+    with open(dataset_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            payload = json.loads(line)
+            cases.append(payload)
+    return cases
+
+
+def _summarize_eval_results(results: list[dict]) -> dict:
+    total = len(results)
+    passed = sum(1 for r in results if r["passed"])
+    accuracy = passed / total if total else 0.0
+    latencies = [r["latency_ms"] for r in results]
+    costs = [r["cost_usd"] for r in results]
+    latencies.sort()
+    p95_latency = 0
+    if latencies:
+        idx = max(0, int(0.95 * (len(latencies) - 1)))
+        p95_latency = latencies[idx]
+    avg_cost = sum(costs) / total if total else 0.0
+    return {
+        "total": total,
+        "passed": passed,
+        "accuracy": accuracy,
+        "p95_latency_ms": p95_latency,
+        "avg_cost_usd": avg_cost,
+    }
 
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request, response: Response):
@@ -375,6 +594,7 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
         if isinstance(providers.get(decision.provider), OllamaProvider):
             model_name = OLLAMA_MODEL
         routed_payload = payload.model_copy(update={"model": model_name})
+        routed_payload, rag_status, rag_context_tokens, rag_context_chunks = _maybe_apply_rag(db, tenant, routed_payload)
 
         cache_status = "bypass"
         cache_key = None
@@ -486,6 +706,8 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
         response.headers["X-Route-Reason"] = route_reason
         response.headers["X-Provider"] = used_provider
         response.headers["X-Cache"] = cache_status
+        response.headers["X-RAG"] = rag_status
+        response.headers["X-RAG-Chunks"] = str(rag_context_chunks)
         return response_obj
     except Exception:
         if req_row is not None:
@@ -503,6 +725,8 @@ async def chat_stream(payload: ChatRequest, request: Request):
     db = get_session()
     start = time.perf_counter()
     response_id = str(uuid.uuid4())
+    rag_status_stream = "bypass"
+    rag_context_chunks_stream = 0
     created = int(time.time())
     content_parts: list[str] = []
     prompt_tokens = 0
@@ -513,6 +737,29 @@ async def chat_stream(payload: ChatRequest, request: Request):
     canceled = False
     failed = False
     done_sent = False
+
+    tenant_id = getattr(request.state, "tenant_id", None)
+    tenant = None
+    if tenant_id is not None:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+    if tenant is None:
+        tenant = db.query(Tenant).filter(Tenant.name == "default").one_or_none()
+        if tenant is None:
+            tenant = Tenant(name="default")
+            db.add(tenant)
+            db.commit()
+            db.refresh(tenant)
+
+    decision = routing_policy.choose(tenant.tier, health_tracker)
+    model_name = decision.model
+    if isinstance(providers.get(decision.provider), OllamaProvider):
+        model_name = OLLAMA_MODEL
+    routed_payload = payload.model_copy(
+        update={"model": model_name, "stream": True}
+    )
+    routed_payload, rag_status_stream, _, rag_context_chunks_stream = _maybe_apply_rag(
+        db, tenant, routed_payload
+    )
 
     async def _stream_from(
         provider_name: str, routed_payload: ChatRequest, model_name: str
@@ -541,6 +788,7 @@ async def chat_stream(payload: ChatRequest, request: Request):
     async def _event_generator():
         nonlocal \
             used_provider, \
+            model_name, \
             prompt_tokens, \
             completion_tokens, \
             total_tokens, \
@@ -548,28 +796,7 @@ async def chat_stream(payload: ChatRequest, request: Request):
             canceled, \
             failed
         req_row = None
-        model_name = None
-        routed_payload = None
         try:
-            tenant_id = getattr(request.state, "tenant_id", None)
-            tenant = None
-            if tenant_id is not None:
-                tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
-            if tenant is None:
-                tenant = db.query(Tenant).filter(Tenant.name == "default").one_or_none()
-                if tenant is None:
-                    tenant = Tenant(name="default")
-                    db.add(tenant)
-                    db.commit()
-                    db.refresh(tenant)
-
-            decision = routing_policy.choose(tenant.tier, health_tracker)
-            model_name = decision.model
-            if isinstance(providers.get(decision.provider), OllamaProvider):
-                model_name = OLLAMA_MODEL
-            routed_payload = payload.model_copy(
-                update={"model": model_name, "stream": True}
-            )
             used_provider = decision.provider
 
             req_row = RequestModel(
@@ -779,7 +1006,183 @@ async def chat_stream(payload: ChatRequest, request: Request):
     stream.headers["Cache-Control"] = "no-cache"
     stream.headers["X-Accel-Buffering"] = "no"
     stream.headers["X-Cache"] = "bypass"
+    stream.headers["X-RAG"] = rag_status_stream
+    stream.headers["X-RAG-Chunks"] = str(rag_context_chunks_stream)
     return stream
+
+
+@app.get("/v1/admin/rag/settings", response_model=RagSettingsResponse)
+async def get_rag_settings(request: Request):
+    guard = _require_admin(request)
+    if guard is not None:
+        return guard
+    return RagSettingsResponse(
+        enabled=RAG_ENABLED,
+        top_k=RAG_TOP_K,
+        max_context_chars=RAG_MAX_CONTEXT_CHARS,
+        rerank=RAG_RERANK,
+    )
+
+
+@app.post("/v1/admin/rag/settings", response_model=RagSettingsResponse)
+async def update_rag_settings(payload: RagSettingsRequest, request: Request):
+    guard = _require_admin(request)
+    if guard is not None:
+        return guard
+    global RAG_ENABLED, RAG_TOP_K, RAG_MAX_CONTEXT_CHARS, RAG_RERANK
+    if payload.enabled is not None:
+        RAG_ENABLED = payload.enabled
+    if payload.top_k is not None:
+        RAG_TOP_K = payload.top_k
+    if payload.max_context_chars is not None:
+        RAG_MAX_CONTEXT_CHARS = payload.max_context_chars
+    if payload.rerank is not None:
+        RAG_RERANK = payload.rerank
+    return RagSettingsResponse(
+        enabled=RAG_ENABLED,
+        top_k=RAG_TOP_K,
+        max_context_chars=RAG_MAX_CONTEXT_CHARS,
+        rerank=RAG_RERANK,
+    )
+
+
+@app.post("/v1/admin/rag/ingest", response_model=RagIngestResponse)
+async def ingest_rag_document(payload: RagIngestRequest, request: Request):
+    guard = _require_admin(request)
+    if guard is not None:
+        return guard
+
+    if payload.overlap >= payload.chunk_size:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"code": "invalid_overlap", "message": "overlap must be less than chunk_size"}},
+        )
+
+    content_hash = hashlib.sha256(payload.content.encode("utf-8")).hexdigest()
+    source_id = payload.source_id or f"ui:{content_hash}"
+
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.name == payload.tenant).one_or_none()
+        if tenant is None:
+            tenant = Tenant(name=payload.tenant)
+            db.add(tenant)
+            db.commit()
+            db.refresh(tenant)
+
+        doc = (
+            db.query(Document)
+            .filter(
+                Document.tenant_id == tenant.id,
+                Document.source == (payload.source or "ui"),
+                Document.source_id == source_id,
+            )
+            .one_or_none()
+        )
+        if doc and doc.content_hash == content_hash:
+            return RagIngestResponse(document_id=str(doc.id), chunks=0)
+
+        metadata = {
+            "source": payload.source or "ui",
+            "source_id": source_id,
+            "title": payload.title,
+        }
+        metadata_json = json.dumps(metadata, separators=(",", ":"))
+
+        if doc is None:
+            doc = Document(
+                tenant_id=tenant.id,
+                source=payload.source or "ui",
+                source_id=source_id,
+                title=payload.title,
+                content_hash=content_hash,
+                metadata_json=metadata_json,
+            )
+            db.add(doc)
+            db.commit()
+            db.refresh(doc)
+        else:
+            doc.title = payload.title
+            doc.content_hash = content_hash
+            doc.metadata_json = metadata_json
+            db.add(doc)
+            db.commit()
+            db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).delete()
+            db.commit()
+
+        chunks = chunk_text(
+            payload.content,
+            chunk_size=payload.chunk_size,
+            overlap=payload.overlap,
+        )
+        vectors = embedding_client.embed([chunk.content for chunk in chunks])
+        if vectors.dim != 768:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "embedding_dim_mismatch", "message": "Embedding dim must be 768"}},
+            )
+        for vector in vectors.vectors:
+            if len(vector) != vectors.dim:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": {"code": "embedding_length_mismatch", "message": "Embedding length mismatch"}},
+                )
+
+        for chunk, vector in zip(chunks, vectors.vectors):
+            db.add(
+                DocumentChunk(
+                    document_id=doc.id,
+                    chunk_index=chunk.index,
+                    content=chunk.content,
+                    token_count=None,
+                    metadata_json=metadata_json,
+                    embedding=vector,
+                    embedding_model=vectors.model,
+                    embedding_dim=vectors.dim,
+                )
+            )
+        db.commit()
+        return RagIngestResponse(document_id=str(doc.id), chunks=len(chunks))
+    finally:
+        db.close()
+
+
+@app.post("/v1/admin/evals/run", response_model=EvalRunResponse)
+async def run_evals(payload: EvalRunRequest, request: Request):
+    guard = _require_admin(request)
+    if guard is not None:
+        return guard
+
+    dataset_path = payload.dataset_path or "evals/dataset.jsonl"
+    cases = _load_eval_cases(dataset_path)
+    results = []
+    for case in cases:
+        prompt = case.get("prompt", "")
+        expected_contains = case.get("expected_contains", [])
+        response = case.get("expected_answer") or " ".join(expected_contains)
+        passed = _score_response(response, expected_contains)
+        token_estimate = _estimate_tokens(
+            [ChatMessage(role="user", content=prompt)], response
+        )
+        cost_value = cost_usd("mock-1", token_estimate)
+        results.append(
+            {
+                "id": case.get("id", ""),
+                "passed": passed,
+                "latency_ms": 0,
+                "cost_usd": cost_value,
+            }
+        )
+    summary = _summarize_eval_results(results)
+    passed_thresholds = True
+    if payload.min_accuracy is not None and summary["accuracy"] < payload.min_accuracy:
+        passed_thresholds = False
+    if payload.max_p95_latency_ms is not None and summary["p95_latency_ms"] > payload.max_p95_latency_ms:
+        passed_thresholds = False
+    if payload.max_avg_cost_usd is not None and summary["avg_cost_usd"] > payload.max_avg_cost_usd:
+        passed_thresholds = False
+    summary["passed_thresholds"] = passed_thresholds
+    return EvalRunResponse(summary=summary)
 
 
 @app.post("/v1/admin/keys", response_model=CreateKeyResponse)
@@ -1591,3 +1994,6 @@ async def log_requests(request: Request, call_next):
     REQUESTS_TOTAL.labels(request.method, request.url.path, status_code).inc()
     REQUEST_LATENCY.labels(request.method, request.url.path).observe(elapsed_seconds)
     return response
+
+
+
