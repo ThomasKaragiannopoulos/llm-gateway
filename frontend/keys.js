@@ -213,19 +213,25 @@ keyElements.listKeys?.addEventListener("click", async () => {
     if (!result.keys.length) {
       keyElements.tenantKeys.innerHTML = "<div class=\"muted\">No keys for tenant.</div>";
     } else {
+      const stored = JSON.parse(localStorage.getItem(KEYS_KEY) || "[]");
+      const hasLocal = (name) => stored.some((item) => item.tenant === tenant && item.name === name);
       result.keys.forEach((k) => {
         const div = document.createElement("div");
         div.className = "key-item";
         const created = k.created_at ? new Date(k.created_at).toLocaleString() : "unknown";
         const lastUsed = k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never";
         const state = k.active ? "active" : "revoked";
+        const localExists = hasLocal(k.name);
+        const localTag = `<span class="pill local-pill${localExists ? "" : " missing"}">local: ${
+          localExists ? "yes" : "no"
+        }</span>`;
         const revokedNote = k.revoked_at
           ? `revoked: ${new Date(k.revoked_at).toLocaleString()}`
           : k.revoked_reason
             ? `revoked: ${k.revoked_reason}`
             : "";
         div.innerHTML = `
-          <strong>${state.toUpperCase()} • ${k.name}</strong>
+          <strong>${state.toUpperCase()} • ${k.name} ${localTag}</strong>
           <span>${created}</span>
           <span>last used: ${lastUsed}</span>
           ${revokedNote ? `<span>${revokedNote}</span>` : ""}
@@ -233,6 +239,9 @@ keyElements.listKeys?.addEventListener("click", async () => {
         `;
         if (!k.active) {
           div.classList.add("revoked");
+        }
+        if (!localExists) {
+          div.classList.add("missing-local");
         }
         keyElements.tenantKeys.appendChild(div);
       });

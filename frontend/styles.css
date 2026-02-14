@@ -453,7 +453,24 @@ button:disabled {
 
 .key-item.revoked {
   opacity: 0.6;
-  border-color: rgba(255, 107, 107, 0.4);
+  border-color: rgba(255, 107, 107, 0.7);
+  box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.5), 0 18px 40px rgba(255, 107, 107, 0.35);
+}
+
+.key-item.revoked.missing-local {
+  opacity: 0.6;
+  background: rgba(7, 11, 17, 0.55);
+  filter: none;
+  border-color: rgba(255, 107, 107, 0.7);
+  box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.5), 0 18px 40px rgba(255, 107, 107, 0.35);
+}
+
+.key-item.missing-local {
+  opacity: 0.6;
+  border-color: rgba(255, 255, 255, 0.06);
+  background: rgba(7, 11, 17, 0.55);
+  box-shadow: none;
+  filter: saturate(0.7);
 }
 
 .key-item strong {
@@ -470,6 +487,18 @@ button:disabled {
   font-size: 11px;
   background: rgba(32, 201, 151, 0.12);
   color: var(--accent);
+}
+
+.pill.local-pill {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.pill.local-pill.missing {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .button-link {
