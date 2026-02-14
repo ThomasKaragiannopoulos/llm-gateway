@@ -67,6 +67,8 @@ PRIMARY_FAIL_RATE = float(os.getenv("PRIMARY_FAIL_RATE", "0"))
 FALLBACK_FAIL_RATE = float(os.getenv("FALLBACK_FAIL_RATE", "0"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+GRAFANA_URL = os.getenv("GRAFANA_URL", "http://grafana:3000")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
 PROVIDER_MODE = os.getenv("PROVIDER_MODE", "mock")
 if PROVIDER_MODE == "ollama":
     providers = {
@@ -212,6 +214,30 @@ async def ollama_health():
         if resp.status_code != 200:
             return JSONResponse(status_code=503, content={"status": "down"})
         return {"status": "ok", "version": resp.json().get("version")}
+
+
+@app.get("/health/grafana")
+async def grafana_health():
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(f"{GRAFANA_URL}/api/health")
+        except httpx.HTTPError:
+            return JSONResponse(status_code=503, content={"status": "down"})
+        if resp.status_code != 200:
+            return JSONResponse(status_code=503, content={"status": "down"})
+        return {"status": "ok"}
+
+
+@app.get("/health/prometheus")
+async def prometheus_health():
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(f"{PROMETHEUS_URL}/-/healthy")
+        except httpx.HTTPError:
+            return JSONResponse(status_code=503, content={"status": "down"})
+        if resp.status_code != 200:
+            return JSONResponse(status_code=503, content={"status": "down"})
+        return {"status": "ok"}
 
 
 @app.on_event("startup")
@@ -1196,7 +1222,7 @@ async def usage_summary(tenant_name: str, request: Request):
 
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics", "/health/ollama"}:
+    if request.url.path in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"}:
         return await call_next(request)
     if request.url.path in {"/", "/admin", "/tenants", "/keys", "/chat"} or request.url.path.startswith("/static"):
         return await call_next(request)
@@ -1234,7 +1260,11 @@ async def api_key_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def rate_limit_requests(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
+    if (
+        request.url.path
+        in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"}
+        or request.url.path.startswith("/v1/admin")
+    ):
         return await call_next(request)
 
     if redis_client is None:
@@ -1280,7 +1310,11 @@ async def rate_limit_requests(request: Request, call_next):
 
 @app.middleware("http")
 async def quota_limits(request: Request, call_next):
-    if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
+    if (
+        request.url.path
+        in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"}
+        or request.url.path.startswith("/v1/admin")
+    ):
         return await call_next(request)
 
     tenant_id = getattr(request.state, "tenant_id", None)
