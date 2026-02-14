@@ -49,6 +49,8 @@ from app.schemas import (
     RevokeKeyByNameRequest,
     RevokeKeyRequest,
     RevokeKeyResponse,
+    VerifyKeyRequest,
+    VerifyKeyResponse,
     LimitsRequest,
     LimitsResponse,
     TenantKeyInfo,
@@ -1031,6 +1033,37 @@ async def revoke_key_by_name(tenant_name: str, payload: RevokeKeyByNameRequest, 
         db.close()
 
     return RevokeKeyResponse(revoked=True, tenant=tenant_name)
+
+
+@app.post("/v1/admin/keys/verify", response_model=VerifyKeyResponse)
+async def verify_key(payload: VerifyKeyRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    key_hash = hash_api_key(payload.api_key)
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.name == payload.tenant).one_or_none()
+        if tenant is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Tenant not found"}},
+            )
+        api_key = (
+            db.query(ApiKey)
+            .filter(ApiKey.tenant_id == tenant.id, ApiKey.name == payload.name)
+            .one_or_none()
+        )
+        if api_key is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "API key not found"}},
+            )
+        matches = api_key.key_hash == key_hash
+        return VerifyKeyResponse(matches=matches, active=bool(api_key.active))
+    finally:
+        db.close()
 
 
 @app.post("/v1/admin/keys/rotate", response_model=RotateAdminKeyResponse)

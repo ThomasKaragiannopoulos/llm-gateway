@@ -114,13 +114,17 @@ const apiFetch = async (path, options = {}) => {
   const response = await fetch(url, { ...options, headers });
   if (!response.ok) {
     let message = "Request failed";
+    let errorBody = null;
     try {
-      const error = await response.json();
-      message = error?.error?.message || message;
+      errorBody = await response.json();
+      message = errorBody?.error?.message || message;
     } catch (err) {
       message = response.statusText || message;
     }
-    throw new Error(message);
+    const reqError = new Error(message);
+    reqError.status = response.status;
+    reqError.body = errorBody;
+    throw reqError;
   }
   return response.json();
 };

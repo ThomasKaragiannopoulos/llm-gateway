@@ -16,6 +16,13 @@
           <div class="brand-subtitle">Create, revoke, and inspect key metadata</div>
         </div>
       </div>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="/">Overview</a>
+        <a href="/admin">Admin</a>
+        <a href="/tenants">Tenants</a>
+        <a class="active" href="/keys">API Keys</a>
+        <a href="/chat">Chat</a>
+      </nav>
       <div class="env-pill" id="env-pill">Disconnected</div>
     </header>
 
@@ -62,7 +69,7 @@
         <p class="muted">Tenant must already exist.</p>
         <label class="field">
           <span>Tenant Name</span>
-          <input id="key-tenant" type="text" placeholder="acme-labs" />
+          <select id="key-tenant"></select>
         </label>
         <label class="field">
           <span>Key Name</span>
@@ -82,13 +89,34 @@
         <h2>List Tenant Keys</h2>
         <label class="field">
           <span>Tenant Name</span>
-          <input id="list-tenant" type="text" placeholder="acme-labs" />
+          <select id="list-tenant"></select>
         </label>
         <div class="row">
           <button class="ghost" id="list-keys">Load Keys</button>
         </div>
         <div class="key-list" id="tenant-keys"></div>
         <div class="status" id="keys-status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Add Existing Key</h2>
+        <p class="muted">Store a known key locally after verifying it matches a tenant key.</p>
+        <label class="field">
+          <span>Tenant Name</span>
+          <select id="import-tenant"></select>
+        </label>
+        <label class="field">
+          <span>Key Name</span>
+          <select id="import-key-name"></select>
+        </label>
+        <label class="field">
+          <span>Key Value</span>
+          <input id="import-key-value" type="password" placeholder="sk-tenant-..." />
+        </label>
+        <div class="row">
+          <button class="primary" id="import-key-btn">Verify &amp; Store</button>
+        </div>
+        <div class="status" id="import-status"></div>
       </section>
 
       <section class="panel">
