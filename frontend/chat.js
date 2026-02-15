@@ -21,6 +21,8 @@ const chatElements = {
   chatStatus: document.getElementById("chat-status"),
   responseBox: document.getElementById("response-box"),
   responseMeta: document.getElementById("response-meta"),
+  ragMeta: document.getElementById("rag-meta"),
+  ragLog: document.getElementById("rag-log"),
 };
 
 const ALL_TENANTS_VALUE = "__all__";
@@ -282,6 +284,12 @@ chatElements.clearChat?.addEventListener("click", () => {
   chatElements.prompt.value = "";
   chatElements.responseBox.textContent = "";
   chatElements.responseMeta.textContent = "No response yet.";
+  if (chatElements.ragMeta) {
+    chatElements.ragMeta.textContent = "RAG: --";
+  }
+  if (chatElements.ragLog) {
+    chatElements.ragLog.textContent = "";
+  }
   setStatus(chatElements.chatStatus, "", "info");
 });
 
@@ -324,6 +332,12 @@ chatElements.sendChat?.addEventListener("click", async () => {
   setStatus(chatElements.chatStatus, "Sending prompt...", "info");
   chatElements.responseBox.textContent = "";
   chatElements.responseMeta.textContent = "Awaiting response...";
+  if (chatElements.ragMeta) {
+    chatElements.ragMeta.textContent = "RAG: pending...";
+  }
+  if (chatElements.ragLog) {
+    chatElements.ragLog.textContent = "";
+  }
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/v1/chat`, {
@@ -349,6 +363,21 @@ chatElements.sendChat?.addEventListener("click", async () => {
       data.created * 1000
     ).toLocaleString()}`;
     chatElements.responseBox.textContent = data.content || "(empty response)";
+    const ragStatus = response.headers.get("x-rag") || "bypass";
+    const ragChunks = response.headers.get("x-rag-chunks") || "0";
+    if (chatElements.ragMeta) {
+      chatElements.ragMeta.textContent = `RAG: ${ragStatus} | chunks: ${ragChunks}`;
+    }
+    if (chatElements.ragLog) {
+      const headerLines = [
+        `x-rag: ${ragStatus}`,
+        `x-rag-chunks: ${ragChunks}`,
+        `x-provider: ${response.headers.get("x-provider") || "--"}`,
+        `x-route-reason: ${response.headers.get("x-route-reason") || "--"}`,
+        `x-cache: ${response.headers.get("x-cache") || "--"}`,
+      ];
+      chatElements.ragLog.textContent = headerLines.join("\n");
+    }
     setStatus(chatElements.chatStatus, "Response received.", "ok");
     saveChatSettings();
   } catch (err) {
