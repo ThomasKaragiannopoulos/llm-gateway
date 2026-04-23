@@ -439,6 +439,38 @@ def _require_admin(request: Request):
     return None
 
 
+def _resolve_tenant_id(request: Request):
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if tenant_id is not None:
+        return tenant_id
+
+    raw_key = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        raw_key = auth_header.split(" ", 1)[1].strip()
+    if not raw_key:
+        raw_key = request.headers.get("X-API-Key")
+    if not raw_key:
+        return None
+
+    db = get_session()
+    try:
+        api_key_row = (
+            db.query(ApiKey.tenant_id)
+            .filter(
+                ApiKey.key_hash == hash_api_key(raw_key),
+                ApiKey.active.is_(True),
+            )
+            .one_or_none()
+        )
+        if api_key_row is None:
+            return None
+        request.state.tenant_id = api_key_row.tenant_id
+        return api_key_row.tenant_id
+    finally:
+        db.close()
+
+
 def _cacheable_request(payload: ChatRequest) -> bool:
     if RAG_ENABLED:
         return False
@@ -737,9 +769,9 @@ async def chat_stream(payload: ChatRequest, request: Request):
     canceled = False
     failed = False
     done_sent = False
+    tenant = None
 
     tenant_id = getattr(request.state, "tenant_id", None)
-    tenant = None
     if tenant_id is not None:
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
     if tenant is None:
@@ -792,6 +824,7 @@ async def chat_stream(payload: ChatRequest, request: Request):
             prompt_tokens, \
             completion_tokens, \
             total_tokens, \
+            tenant, \
             completed, \
             canceled, \
             failed
@@ -1837,7 +1870,7 @@ async def rate_limit_requests(request: Request, call_next):
             },
         )
 
-    tenant_id = getattr(request.state, "tenant_id", "unknown")
+    tenant_id = _resolve_tenant_id(request) or "unknown"
     minute_bucket = int(time.time() // 60)
     key = f"rl:req:{tenant_id}:{minute_bucket}"
 
@@ -1887,7 +1920,7 @@ async def quota_limits(request: Request, call_next):
     } or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
-    tenant_id = getattr(request.state, "tenant_id", None)
+    tenant_id = _resolve_tenant_id(request)
     if tenant_id is None:
         return await call_next(request)
 

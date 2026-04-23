@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo:*)",
+      "Bash(gh --version)",
+      "Bash(winget install:*)",
+      "mcp__codebase-memory-mcp__list_projects",
+      "mcp__codebase-memory-mcp__get_architecture"
+    ]
+  }
+}
