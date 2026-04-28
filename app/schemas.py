@@ -147,34 +147,6 @@ class UsageSummaryResponse(BaseModel):
     cost_usd: float
 
 
-class RagSettingsRequest(BaseModel):
-    enabled: bool | None = None
-    top_k: int | None = Field(default=None, gt=0, le=20)
-    max_context_chars: int | None = Field(default=None, gt=0, le=20000)
-    rerank: bool | None = None
-
-
-class RagSettingsResponse(BaseModel):
-    enabled: bool
-    top_k: int
-    max_context_chars: int
-    rerank: bool
-
-
-class RagIngestRequest(BaseModel):
-    tenant: str = Field(min_length=1, default="default")
-    source: str | None = Field(default="ui")
-    source_id: str | None = None
-    title: str | None = None
-    content: str = Field(min_length=1)
-    chunk_size: int = Field(default=1000, gt=0, le=5000)
-    overlap: int = Field(default=200, ge=0, le=1000)
-
-
-class RagIngestResponse(BaseModel):
-    document_id: str
-    chunks: int
-
 
 class EvalRunRequest(BaseModel):
     dataset_path: str | None = Field(default="evals/dataset.jsonl")

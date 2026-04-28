@@ -9,7 +9,6 @@
 - Standard and streaming chat endpoints with SSE responses
 - Redis-backed rate limiting and response caching
 - Per-tenant token and spend quotas
-- RAG ingestion, embedding, retrieval, and reranking pipeline
 - Prometheus metrics, Grafana dashboards, and optional OpenTelemetry tracing
 - Docker Compose stack for local development
 - Browser-based admin and tenant management UI in `frontend/`
@@ -19,7 +18,7 @@
 | Component | Role |
 | --- | --- |
 | FastAPI app | Chat API, admin API, health endpoints, metrics, static UI hosting |
-| PostgreSQL + SQLAlchemy | Tenants, API keys, requests, usage, admin actions, RAG metadata |
+| PostgreSQL + SQLAlchemy | Tenants, API keys, requests, usage, and admin actions |
 | Redis | Rate limiting counters and cached chat responses |
 | Ollama | Local model inference and embeddings when `PROVIDER_MODE=ollama` |
 | Mock provider | Deterministic local fallback for tests and demos |
@@ -27,13 +26,44 @@
 | Grafana | Dashboards for request, provider, quota, and cache visibility |
 | Static frontend | Admin, tenants, keys, and chat pages served by FastAPI |
 
+## Architecture Diagram
+
+```mermaid
+flowchart TD
+    Client["Client / curl / frontend"] -->|HTTP| MW
+
+    subgraph Gateway["FastAPI Gateway · :8000"]
+        MW["Middleware chain\n─────────────────\nlog_requests\napi_key_auth\nrate_limit_requests\nquota_limits"]
+        MW --> Router["Routing policy\nhealth tracker"]
+        Router -->|primary| P["Primary provider"]
+        Router -->|fallback| F["Fallback provider"]
+        P -->|retry + circuit breaker| P
+        P -->|open circuit| F
+    end
+
+    P -->|PROVIDER_MODE=ollama| Ollama["Ollama\n:11434"]
+    P -->|PROVIDER_MODE=mock| Mock["Mock provider"]
+    F --> Mock
+
+    MW -->|auth lookup\nquota check\nusage write| PG[("PostgreSQL\n:5432")]
+    MW -->|rate limit counters\nresponse cache| Redis[("Redis\n:6379")]
+
+    Gateway -->|/metrics| Prom["Prometheus\n:9090"]
+    Prom --> Grafana["Grafana\n:3000"]
+
+    Admin["Admin endpoints\n/v1/admin/*"] -->|tenants / keys\naudit / limits / usage| PG
+    Gateway --- Admin
+```
+
 ## Repository Layout
 
 | Path | Purpose |
 | --- | --- |
-| `app/main.py` | FastAPI entrypoint, middleware, routing, and admin endpoints |
+| `app/main.py` | FastAPI app, lifespan, middleware, provider setup |
+| `app/routers/` | Route handlers split by domain (health, chat, admin) |
+| `app/metrics.py` | Prometheus counter and histogram definitions |
+| `app/state.py` | Shared runtime state (redis, providers, health tracker) |
 | `app/db/` | SQLAlchemy models and session management |
-| `app/rag/` | Chunking, embeddings, retrieval, and reranking |
 | `frontend/` | Static HTML/CSS/JS UI served by the backend |
 | `tests/` | Unit and integration tests |
 | `prometheus/` | Prometheus scrape config |
@@ -55,7 +85,7 @@ Services exposed locally:
 
 - API: `http://localhost:8000`
 - Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`
+- Grafana: `http://localhost:3001`
 - PostgreSQL: `localhost:1312`
 - Redis: `localhost:6379`
 
@@ -82,7 +112,6 @@ For local app-only development you still need PostgreSQL and Redis available at 
 | `PROVIDER_MODE` | No | `mock` | Provider backend: `mock` or `ollama`. |
 | `OLLAMA_URL` | No | `http://localhost:11434` | Ollama base URL for generation and embeddings. |
 | `OLLAMA_MODEL` | No | `llama3.1:8b` | Default chat model when Ollama is enabled. |
-| `OLLAMA_EMBED_MODEL` | No | `nomic-embed-text` | Embedding model for RAG ingestion and retrieval. |
 | `PRIMARY_FAIL_RATE` | No | `0` | Failure injection rate for the primary mock provider. |
 | `FALLBACK_FAIL_RATE` | No | `0` | Failure injection rate for the fallback provider. |
 | `PROVIDER_RETRIES` | No | `2` | Retry attempts for provider calls. |
@@ -95,12 +124,6 @@ For local app-only development you still need PostgreSQL and Redis available at 
 | `REQUESTS_PER_MINUTE` | No | `60` | Per-tenant request rate limit. |
 | `TOKENS_PER_MINUTE` | No | `1000` | Per-tenant token estimate rate limit. |
 | `CACHE_TTL_SECONDS` | No | `300` | Redis cache TTL for non-streaming chat responses. |
-| `RAG_ENABLED` | No | `false` | Enables retrieval augmentation for chat requests. |
-| `RAG_TOP_K` | No | `4` | Number of chunks retrieved before reranking. |
-| `RAG_MAX_CONTEXT_CHARS` | No | `4000` | Cap on retrieved context injected into prompts. |
-| `RAG_RERANK` | No | `true` | Enables deterministic reranking after retrieval. |
-| `EMBEDDINGS_PROVIDER` | No | Derived from `PROVIDER_MODE` | Embedding backend: `ollama` or `mock`. |
-| `EMBEDDING_DIM` | No | `768` | Embedding dimension for deterministic embeddings and schema defaults. |
 | `PROMETHEUS_URL` | No | `http://prometheus:9090` | Health target for the Prometheus service. |
 | `GRAFANA_URL` | No | `http://grafana:3000` | Health target for the Grafana service. |
 | `OTEL_ENABLED` | No | `false` | Enables OpenTelemetry tracing. |
@@ -125,9 +148,6 @@ See [.env.example](./.env.example) for a copy-pasteable local template.
 | `GET` | `/health/prometheus` | None | Prometheus dependency health check. |
 | `POST` | `/v1/chat` | API key | Standard chat completion request. |
 | `POST` | `/v1/chat/stream` | API key | SSE streaming chat completion request. |
-| `GET` | `/v1/admin/rag/settings` | Admin key | Read current RAG settings. |
-| `POST` | `/v1/admin/rag/settings` | Admin key | Update RAG settings at runtime. |
-| `POST` | `/v1/admin/rag/ingest` | Admin key | Ingest a document into the RAG store. |
 | `POST` | `/v1/admin/evals/run` | Admin key | Run offline eval checks against a dataset. |
 | `POST` | `/v1/admin/keys` | Admin key | Create an API key for a tenant. |
 | `POST` | `/v1/admin/tenants` | Admin key | Create a tenant. |
@@ -212,7 +232,27 @@ poetry run alembic upgrade head
 
 The repository already contains Alembic revisions in `alembic/versions/`, so migration history is not empty.
 
+## Load Testing
+
+Locust scripts live in `evals/locustfile.py`. Install Locust and run against the gateway:
+
+```bash
+pip install locust
+locust -f evals/locustfile.py --host http://localhost:8000
+```
+
+Open `http://localhost:8089` in a browser, set the number of users and spawn rate, then start the test. The script bootstraps its own test tenant and key using `ADMIN_API_KEY` from the environment, so no manual setup is needed.
+
+Typical results against the mock provider on a single laptop core:
+
+| Metric | Value |
+| --- | --- |
+| p50 `/v1/chat` | ~5 ms |
+| p95 `/v1/chat` | ~15 ms |
+| Throughput | ~400 req/s (mock, no Ollama) |
+| Rate-limit 429 at 60 req/min/tenant | confirmed |
+
 ## Notes
 
-- The app currently uses synchronous SQLAlchemy sessions inside async handlers. That is acceptable for a small local stack, but an async database migration would be the next architectural cleanup if this moved beyond portfolio scope.
+- The app uses synchronous SQLAlchemy sessions inside async handlers. Acceptable for a local stack; an async session would be the next step for production scale.
 - Admin credentials are seeded from environment variables on startup. Rotating the admin key through the API requires updating `ADMIN_API_KEY` in your environment before the next restart if you want the rotated key to persist.

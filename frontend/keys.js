@@ -9,6 +9,7 @@ const keyElements = {
   createKey: document.getElementById("create-key"),
   keyValue: document.getElementById("key-value"),
   copyLatest: document.getElementById("copy-latest"),
+  keyCopyWarning: document.getElementById("key-copy-warning"),
   listTenant: document.getElementById("list-tenant"),
   listKeys: document.getElementById("list-keys"),
   tenantKeys: document.getElementById("tenant-keys"),
@@ -82,7 +83,7 @@ const loadTenants = async () => {
       "No session. Save admin key."
     );
   }
-};
+ };
 
 const loadKeyNamesForTenant = async (tenant, select, emptyMessage) => {
   if (!tenant) {
@@ -170,6 +171,9 @@ keyElements.createKey?.addEventListener("click", async () => {
     });
     keyElements.keyValue.textContent = result.api_key;
     keyElements.copyLatest.disabled = false;
+    if (keyElements.keyCopyWarning) {
+      keyElements.keyCopyWarning.style.display = "";
+    }
     const keys = JSON.parse(localStorage.getItem(KEYS_KEY) || "[]");
     keys.unshift({
       tenant: result.tenant,
@@ -194,6 +198,9 @@ keyElements.copyLatest?.addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(text);
     setStatus(keyElements.sessionStatus, "Key copied to clipboard.", "ok");
+    if (keyElements.keyCopyWarning) {
+      keyElements.keyCopyWarning.style.display = "none";
+    }
   } catch (err) {
     setStatus(keyElements.sessionStatus, "Copy failed. Select the key manually.", "warn");
   }

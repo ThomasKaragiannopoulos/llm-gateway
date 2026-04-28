@@ -11,10 +11,8 @@ from sqlalchemy import (
     func,
     Index,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from pgvector.sqlalchemy import Vector
-
 from app.db.base import Base
 
 
@@ -22,7 +20,7 @@ class Tenant(Base):
     __tablename__ = "tenants"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        Uuid, primary_key=True, default=uuid.uuid4
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     tier: Mapped[str] = mapped_column(String(50), nullable=False, default="free")
@@ -46,7 +44,7 @@ class ApiKey(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        Uuid, primary_key=True, default=uuid.uuid4
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tenants.id"), nullable=False
@@ -82,7 +80,7 @@ class Request(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        Uuid, primary_key=True, default=uuid.uuid4
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tenants.id"), nullable=False
@@ -115,7 +113,7 @@ class UsageEvent(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        Uuid, primary_key=True, default=uuid.uuid4
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tenants.id"), nullable=False
@@ -141,7 +139,7 @@ class AdminAction(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        Uuid, primary_key=True, default=uuid.uuid4
     )
     actor_tenant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tenants.id"), nullable=False
@@ -155,59 +153,4 @@ class AdminAction(Base):
     )
 
 
-class Document(Base):
-    __tablename__ = "documents"
-    __table_args__ = (
-        Index("uq_documents_tenant_source", "tenant_id", "source", "source_id", unique=True),
-        Index("ix_documents_tenant_id", "tenant_id"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("tenants.id"), nullable=False
-    )
-    source: Mapped[str] = mapped_column(String(200), nullable=False, default="file")
-    source_id: Mapped[str | None] = mapped_column(String(400), nullable=True)
-    title: Mapped[str | None] = mapped_column(String(400), nullable=True)
-    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
-    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    chunks: Mapped[list["DocumentChunk"]] = relationship(
-        back_populates="document", cascade="all, delete-orphan"
-    )
-
-
-class DocumentChunk(Base):
-    __tablename__ = "document_chunks"
-    __table_args__ = (
-        Index("ix_document_chunks_document_id", "document_id"),
-        Index("uq_document_chunks_document_id_chunk_index", "document_id", "chunk_index", unique=True),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id"), nullable=False
-    )
-    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedding: Mapped[list[float]] = mapped_column(Vector(768))
-    embedding_model: Mapped[str] = mapped_column(String(120), nullable=False)
-    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False, default=768)
-    created_at: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-    document: Mapped["Document"] = relationship(back_populates="chunks")
 

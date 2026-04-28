@@ -18,7 +18,6 @@
       </div>
       <nav class="site-nav" aria-label="Primary">
         <a class="active" href="/">Overview</a>
-        <a href="/admin">Admin</a>
         <a href="/tenants">Tenants</a>
         <a href="/keys">API Keys</a>
         <a href="/chat">Chat</a>
@@ -41,10 +40,6 @@
         </p>
         <div class="hero-grid">
           <div class="hero-card">
-            <div class="hero-label">Admin</div>
-            <div class="hero-value">Session, audit, rotation</div>
-          </div>
-          <div class="hero-card">
             <div class="hero-label">Tenants</div>
             <div class="hero-value">Lifecycle, limits, usage</div>
           </div>
@@ -55,12 +50,21 @@
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Admin</h2>
-        <p class="muted">Session, audit log, and admin key rotation.</p>
-        <div class="row">
-          <a class="primary button-link" href="/admin">Open Admin</a>
-        </div>
+      <section class="panel" style="grid-column: 1 / -1">
+        <div class="eyebrow">Quick Start</div>
+        <h2>Getting Started</h2>
+        <p class="muted">New here? Follow these three steps in order to send your first request.</p>
+        <ol class="steps">
+          <li>
+            <div><strong>Create a tenant</strong> — Go to <a href="/tenants">Tenants</a>, enter a name (e.g. <code>acme-labs</code>) and tier (e.g. <code>free</code>), then click <strong>Create Tenant</strong>.</div>
+          </li>
+          <li>
+            <div><strong>Generate a key</strong> — Go to <a href="/keys">API Keys</a>, select your tenant, enter a key name (e.g. <code>prod-default</code>), click <strong>Generate Key</strong>, and copy it immediately — it is only shown once.</div>
+          </li>
+          <li>
+            <div><strong>Send a prompt</strong> — Go to <a href="/chat">Chat</a>, click <strong>Fetch Tenants</strong>, select your tenant and key, type a prompt, and click <strong>Send</strong>.</div>
+          </li>
+        </ol>
       </section>
 
       <section class="panel">

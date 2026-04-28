@@ -65,7 +65,11 @@ const renderTenants = (tenants) => {
       <td>${t.spend_limit_per_day_usd ?? "--"}</td>
       <td>${t.created_at ? new Date(t.created_at).toLocaleDateString() : "--"}</td>
     `;
-    row.addEventListener("click", () => setSelectedTenant(t));
+    row.addEventListener("click", () => {
+      document.querySelectorAll("#tenants-body tr.selected").forEach((r) => r.classList.remove("selected"));
+      row.classList.add("selected");
+      setSelectedTenant(t);
+    });
     tenantElements.tenantsBody.appendChild(row);
   });
 };
