@@ -5,11 +5,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import func
 
-from app import state
 from app.auth import hash_api_key
+from app.config import settings
 from app.db.models import AdminAction, ApiKey, Request as RequestModel, Tenant, UsageEvent
-from app.db.session import get_session
 from app.pricing import cost_usd
+from app.runtime import get_session, state
 from app.schemas import (
     AdminActionEntry,
     AdminAuditResponse,
@@ -21,6 +21,7 @@ from app.schemas import (
     CreateTenantResponse,
     EvalRunRequest,
     EvalRunResponse,
+    EvalSummary,
     LimitsRequest,
     LimitsResponse,
     ListTenantKeysResponse,
@@ -138,7 +139,7 @@ async def run_evals(payload: EvalRunRequest, request: Request):
         token_estimate = _estimate_tokens(
             [ChatMessage(role="user", content=prompt)], response
         )
-        cost_value = cost_usd("mock-1", token_estimate)
+        cost_value = cost_usd(settings.model_free, token_estimate, 0)
         results.append(
             {
                 "id": case.get("id", ""),
@@ -155,8 +156,16 @@ async def run_evals(payload: EvalRunRequest, request: Request):
         passed_thresholds = False
     if payload.max_avg_cost_usd is not None and summary["avg_cost_usd"] > payload.max_avg_cost_usd:
         passed_thresholds = False
-    summary["passed_thresholds"] = passed_thresholds
-    return EvalRunResponse(summary=summary)
+    return EvalRunResponse(
+        summary=EvalSummary(
+            total=summary["total"],
+            passed=summary["passed"],
+            accuracy=summary["accuracy"],
+            p95_latency_ms=summary["p95_latency_ms"],
+            avg_cost_usd=summary["avg_cost_usd"],
+            passed_thresholds=passed_thresholds,
+        )
+    )
 
 
 @router.post("/keys", response_model=CreateKeyResponse)

@@ -1,10 +1,7 @@
-"""Shared runtime state populated during app lifespan."""
+"""Backward-compatible proxy to the shared runtime state."""
 
-from typing import Optional
+from app.runtime import state as _runtime_state
 
-from redis.asyncio import Redis
 
-redis_client: Optional[Redis] = None
-providers: dict = {}
-health_tracker = None
-routing_policy = None
+def __getattr__(name: str):
+    return getattr(_runtime_state, name)

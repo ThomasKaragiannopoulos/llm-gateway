@@ -1,4 +1,5 @@
 from app.auth import hash_api_key
+from app.config import settings
 from app.pricing import cost_usd, merge_pricing
 from app.routing import ProviderHealth, RoutingPolicy
 
@@ -12,8 +13,8 @@ def test_hash_api_key_changes_with_input():
 
 
 def test_cost_usd_known_inputs():
-    assert cost_usd("mock-1", 1000) == 0.002
-    assert cost_usd("mock-2", 500) == 0.003
+    assert cost_usd("mock-1", 1000, 0) == 0.002
+    assert cost_usd("mock-2", 500, 0) == 0.003
 
 
 def test_merge_pricing_applies_overrides():
@@ -57,5 +58,5 @@ def test_routing_policy_prefers_primary_when_healthy():
     decision = policy.choose("pro", health)
 
     assert decision.provider == "primary"
-    assert decision.model == "mock-2"
+    assert decision.model == settings.model_pro
     assert decision.fallback_provider == "fallback"

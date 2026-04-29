@@ -1,17 +1,17 @@
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
-import os
 import time
 import uuid
 
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 
-from app import state
+from app.config import settings
 from app.db.models import Request as RequestModel, Tenant, UsageEvent
-from app.db.session import get_session
 from app.metrics import (
     CACHE_HITS_TOTAL,
     CACHE_MISSES_TOTAL,
@@ -25,12 +25,11 @@ from app.metrics import (
 from app.ollama_provider import OllamaProvider
 from app.pricing import cost_usd
 from app.provider import StreamChunk
+from app.runtime import get_session, state
 from app.schemas import ChatRequest, ChatResponse
 
 router = APIRouter()
 
-_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-_CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))
 _CACHE_VERSION = "v1"
 
 
@@ -59,13 +58,14 @@ def _format_sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
-@router.post("/v1/chat", response_model=ChatResponse)
-async def chat(payload: ChatRequest, request: Request, response: Response):
+# ---------------------------------------------------------------------------
+# Sync DB helpers — called via asyncio.to_thread to avoid blocking event loop
+# ---------------------------------------------------------------------------
+
+def _db_get_or_create_default_tenant(tenant_id) -> tuple:
+    """Returns (id, tier, name). Creates the default tenant if needed."""
     db = get_session()
-    req_row = None
-    start = time.perf_counter()
     try:
-        tenant_id = getattr(request.state, "tenant_id", None)
         tenant = None
         if tenant_id is not None:
             tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
@@ -76,37 +76,132 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
                 db.add(tenant)
                 db.commit()
                 db.refresh(tenant)
+        return tenant.id, tenant.tier, tenant.name
+    finally:
+        db.close()
 
-        decision = state.routing_policy.choose(tenant.tier, state.health_tracker)
+
+def _db_begin_request(tenant_id, model: str, payload_json: str):
+    """Inserts an in_progress request row. Returns the new row ID."""
+    db = get_session()
+    try:
+        row = RequestModel(
+            tenant_id=tenant_id,
+            model=model,
+            status="in_progress",
+            request_payload=payload_json,
+        )
+        db.add(row)
+        db.commit()
+        return row.id
+    finally:
+        db.close()
+
+
+def _db_complete_request(
+    req_id,
+    response_json: str,
+    latency_ms: int,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    cost: float,
+    tenant_id,
+    model: str,
+) -> None:
+    db = get_session()
+    try:
+        row = db.query(RequestModel).filter(RequestModel.id == req_id).one()
+        row.status = "completed"
+        row.response_payload = response_json
+        row.latency_ms = latency_ms
+        row.prompt_tokens = prompt_tokens
+        row.completion_tokens = completion_tokens
+        row.total_tokens = total_tokens
+        row.cost_usd = cost
+        row.completed_at = func.now()
+        db.add(row)
+        db.add(
+            UsageEvent(
+                tenant_id=tenant_id,
+                request_id=req_id,
+                model=model,
+                tokens=total_tokens,
+                cost_usd=cost,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _db_fail_request(req_id) -> None:
+    db = get_session()
+    try:
+        row = db.query(RequestModel).filter(RequestModel.id == req_id).one_or_none()
+        if row is not None:
+            row.status = "failed"
+            row.completed_at = func.now()
+            db.add(row)
+            db.commit()
+    finally:
+        db.close()
+
+
+def _db_set_request_status(req_id, status: str) -> None:
+    db = get_session()
+    try:
+        row = db.query(RequestModel).filter(RequestModel.id == req_id).one_or_none()
+        if row is not None:
+            row.status = status
+            row.completed_at = func.now()
+            db.add(row)
+            db.commit()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@router.post("/v1/chat", response_model=ChatResponse)
+async def chat(payload: ChatRequest, request: Request, response: Response):
+    req_id = None
+    start = time.perf_counter()
+    try:
+        tenant_id = getattr(request.state, "tenant_id", None)
+        t_id, tier, t_name = await asyncio.to_thread(
+            _db_get_or_create_default_tenant, tenant_id
+        )
+
+        decision = state.routing_policy.choose(tier, state.health_tracker)
         model_name = decision.model
         if isinstance(state.providers.get(decision.provider), OllamaProvider):
-            model_name = _OLLAMA_MODEL
+            model_name = settings.ollama_model
         routed_payload = payload.model_copy(update={"model": model_name})
 
         cache_status = "bypass"
         cache_key = None
         cache_entry = None
         if state.redis_client is not None and _cacheable_request(routed_payload):
-            cache_key = _cache_key(tenant.id, routed_payload)
+            cache_key = _cache_key(t_id, routed_payload)
             cached_raw = await state.redis_client.get(cache_key)
             if cached_raw:
                 cache_status = "hit"
-                CACHE_HITS_TOTAL.labels(tenant.name, model_name).inc()
+                CACHE_HITS_TOTAL.labels(t_name, model_name).inc()
                 cache_entry = json.loads(cached_raw)
             else:
                 cache_status = "miss"
-                CACHE_MISSES_TOTAL.labels(tenant.name, model_name).inc()
+                CACHE_MISSES_TOTAL.labels(t_name, model_name).inc()
 
-        req_row = RequestModel(
-            tenant_id=tenant.id,
-            model=model_name,
-            status="in_progress",
-            request_payload=routed_payload.model_dump_json(),
+        req_id = await asyncio.to_thread(
+            _db_begin_request, t_id, model_name, routed_payload.model_dump_json()
         )
-        db.add(req_row)
-        db.commit()
+
         used_provider = decision.provider
         route_reason = decision.reason
+
         if cache_entry is not None:
             response_obj = ChatResponse.model_validate(cache_entry["response"])
             prompt_tokens = int(cache_entry.get("prompt_tokens") or 0)
@@ -141,71 +236,62 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
             prompt_tokens = result.prompt_tokens
             completion_tokens = result.completion_tokens
             total_tokens = result.total_tokens
-            cost_value = cost_usd(model_name, total_tokens)
+            cost_value = cost_usd(model_name, prompt_tokens, completion_tokens)
             if cache_key and cache_status == "miss":
-                cache_payload = {
-                    "response": response_obj.model_dump(),
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                    "cost_usd": cost_value,
-                }
                 await state.redis_client.set(
                     cache_key,
-                    json.dumps(cache_payload, separators=(",", ":")),
-                    ex=_CACHE_TTL_SECONDS,
+                    json.dumps(
+                        {
+                            "response": response_obj.model_dump(),
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": total_tokens,
+                            "cost_usd": cost_value,
+                        },
+                        separators=(",", ":"),
+                    ),
+                    ex=settings.cache_ttl_seconds,
                 )
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
-        req_row.status = "completed"
-        req_row.response_payload = response_obj.model_dump_json()
-        req_row.latency_ms = elapsed_ms
-        req_row.prompt_tokens = prompt_tokens
-        req_row.completion_tokens = completion_tokens
-        req_row.total_tokens = total_tokens
-        req_row.cost_usd = cost_value
-        req_row.completed_at = func.now()
-        db.add(req_row)
-        usage = UsageEvent(
-            tenant_id=tenant.id,
-            request_id=req_row.id,
-            model=model_name,
-            tokens=req_row.total_tokens,
-            cost_usd=req_row.cost_usd or 0.0,
+        await asyncio.to_thread(
+            _db_complete_request,
+            req_id,
+            response_obj.model_dump_json(),
+            elapsed_ms,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cost_value,
+            t_id,
+            model_name,
         )
-        db.add(usage)
-        db.commit()
 
-        TOKENS_TOTAL.labels(model_name).inc(req_row.total_tokens or 0)
-        COST_TOTAL.labels(model_name).inc(req_row.cost_usd or 0.0)
-        TENANT_REQUESTS_TOTAL.labels(tenant.name, tenant.tier).inc()
-        TENANT_TOKENS_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.total_tokens or 0)
-        TENANT_COST_TOTAL.labels(tenant.name, tenant.tier).inc(req_row.cost_usd or 0.0)
-        response.headers["X-Model-Chosen"] = model_name
+        TOKENS_TOTAL.labels(model_name).inc(total_tokens)
+        COST_TOTAL.labels(model_name).inc(cost_value)
+        TENANT_REQUESTS_TOTAL.labels(t_name, tier).inc()
+        TENANT_TOKENS_TOTAL.labels(t_name, tier).inc(total_tokens)
+        TENANT_COST_TOTAL.labels(t_name, tier).inc(cost_value)
+
         if route_reason != "cache_hit":
             route_reason = (
                 "primary_error"
                 if used_provider != decision.provider
                 else decision.reason
             )
+        response.headers["X-Model-Chosen"] = model_name
         response.headers["X-Route-Reason"] = route_reason
         response.headers["X-Provider"] = used_provider
         response.headers["X-Cache"] = cache_status
         return response_obj
     except Exception:
-        if req_row is not None:
-            req_row.status = "failed"
-            req_row.completed_at = func.now()
-            db.add(req_row)
-            db.commit()
+        if req_id is not None:
+            await asyncio.to_thread(_db_fail_request, req_id)
         raise
-    finally:
-        db.close()
 
 
 @router.post("/v1/chat/stream")
 async def chat_stream(payload: ChatRequest, request: Request):
-    db = get_session()
     start = time.perf_counter()
     response_id = str(uuid.uuid4())
     created = int(time.time())
@@ -218,23 +304,16 @@ async def chat_stream(payload: ChatRequest, request: Request):
     canceled = False
     failed = False
     done_sent = False
-    tenant = None
 
     tenant_id = getattr(request.state, "tenant_id", None)
-    if tenant_id is not None:
-        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
-    if tenant is None:
-        tenant = db.query(Tenant).filter(Tenant.name == "default").one_or_none()
-        if tenant is None:
-            tenant = Tenant(name="default")
-            db.add(tenant)
-            db.commit()
-            db.refresh(tenant)
+    t_id, tier, t_name = await asyncio.to_thread(
+        _db_get_or_create_default_tenant, tenant_id
+    )
 
-    decision = state.routing_policy.choose(tenant.tier, state.health_tracker)
+    decision = state.routing_policy.choose(tier, state.health_tracker)
     model_name = decision.model
     if isinstance(state.providers.get(decision.provider), OllamaProvider):
-        model_name = _OLLAMA_MODEL
+        model_name = settings.ollama_model
     routed_payload = payload.model_copy(update={"model": model_name, "stream": True})
 
     async def _stream_from(provider_name: str, routed_payload: ChatRequest, model_name: str):
@@ -266,22 +345,15 @@ async def chat_stream(payload: ChatRequest, request: Request):
             prompt_tokens, \
             completion_tokens, \
             total_tokens, \
-            tenant, \
             completed, \
             canceled, \
             failed
-        req_row = None
+        req_id = None
         try:
             used_provider = decision.provider
-
-            req_row = RequestModel(
-                tenant_id=tenant.id,
-                model=model_name,
-                status="in_progress",
-                request_payload=routed_payload.model_dump_json(),
+            req_id = await asyncio.to_thread(
+                _db_begin_request, t_id, model_name, routed_payload.model_dump_json()
             )
-            db.add(req_row)
-            db.commit()
 
             try:
                 async for chunk in _stream_from(decision.provider, routed_payload, model_name):
@@ -414,55 +486,37 @@ async def chat_stream(payload: ChatRequest, request: Request):
         except asyncio.CancelledError:
             canceled = True
         finally:
-            if req_row is not None:
+            if req_id is not None:
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                req_row.latency_ms = elapsed_ms
                 if completed:
-                    req_row.status = "completed"
-                    req_row.response_payload = ChatResponse(
+                    cost_value = cost_usd(model_name, prompt_tokens, completion_tokens)
+                    response_json = ChatResponse(
                         id=response_id,
-                        model=(model_name or req_row.model),
+                        model=model_name,
                         created=created,
                         content="".join(content_parts),
                     ).model_dump_json()
-                    req_row.prompt_tokens = prompt_tokens
-                    req_row.completion_tokens = completion_tokens
-                    req_row.total_tokens = total_tokens
-                    req_row.cost_usd = cost_usd(req_row.model, total_tokens)
-                    req_row.completed_at = func.now()
-                    db.add(req_row)
-                    usage = UsageEvent(
-                        tenant_id=req_row.tenant_id,
-                        request_id=req_row.id,
-                        model=req_row.model,
-                        tokens=req_row.total_tokens or 0,
-                        cost_usd=req_row.cost_usd or 0.0,
+                    await asyncio.to_thread(
+                        _db_complete_request,
+                        req_id,
+                        response_json,
+                        elapsed_ms,
+                        prompt_tokens,
+                        completion_tokens,
+                        total_tokens,
+                        cost_value,
+                        t_id,
+                        model_name,
                     )
-                    db.add(usage)
-                    db.commit()
-
-                    TOKENS_TOTAL.labels(req_row.model).inc(req_row.total_tokens or 0)
-                    COST_TOTAL.labels(req_row.model).inc(req_row.cost_usd or 0.0)
-                    t = (
-                        db.query(Tenant)
-                        .filter(Tenant.id == req_row.tenant_id)
-                        .one_or_none()
-                    )
-                    if t is not None:
-                        TENANT_REQUESTS_TOTAL.labels(t.name, t.tier).inc()
-                        TENANT_TOKENS_TOTAL.labels(t.name, t.tier).inc(req_row.total_tokens or 0)
-                        TENANT_COST_TOTAL.labels(t.name, t.tier).inc(req_row.cost_usd or 0.0)
+                    TOKENS_TOTAL.labels(model_name).inc(total_tokens)
+                    COST_TOTAL.labels(model_name).inc(cost_value)
+                    TENANT_REQUESTS_TOTAL.labels(t_name, tier).inc()
+                    TENANT_TOKENS_TOTAL.labels(t_name, tier).inc(total_tokens)
+                    TENANT_COST_TOTAL.labels(t_name, tier).inc(cost_value)
                 elif canceled:
-                    req_row.status = "canceled"
-                    req_row.completed_at = func.now()
-                    db.add(req_row)
-                    db.commit()
+                    await asyncio.to_thread(_db_set_request_status, req_id, "canceled")
                 elif failed:
-                    req_row.status = "failed"
-                    req_row.completed_at = func.now()
-                    db.add(req_row)
-                    db.commit()
-            db.close()
+                    await asyncio.to_thread(_db_set_request_status, req_id, "failed")
 
     stream = StreamingResponse(_event_generator(), media_type="text/event-stream")
     stream.headers["Cache-Control"] = "no-cache"

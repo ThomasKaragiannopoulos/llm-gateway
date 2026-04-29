@@ -1,9 +1,10 @@
 
 import asyncio
+import pytest
 
 from app.provider import Provider, ProviderResult
 from app.schemas import ChatRequest, ChatResponse, ChatMessage
-from app.reliability import CircuitBreaker, ResilientProvider, RetryConfig
+from app.reliability import CircuitBreaker, CircuitOpenError, ResilientProvider, RetryConfig
 
 
 class FlakyProvider(Provider):
@@ -45,11 +46,11 @@ def test_resilient_provider_circuit_opens():
         circuit_breaker=CircuitBreaker(failure_threshold=2, reset_timeout_s=60),
     )
     request = ChatRequest(model="mock-1", messages=[ChatMessage(role="user", content="hi")])
-    try:
+
+    # First call: exhausts retries, increments failure count
+    with pytest.raises(RuntimeError):
         asyncio.run(resilient.generate(request))
-    except RuntimeError:
-        pass
-    try:
+
+    # Second call: circuit should now be open
+    with pytest.raises(CircuitOpenError):
         asyncio.run(resilient.generate(request))
-    except RuntimeError:
-        pass

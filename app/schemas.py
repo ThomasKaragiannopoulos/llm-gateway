@@ -155,5 +155,14 @@ class EvalRunRequest(BaseModel):
     max_avg_cost_usd: float | None = Field(default=0.01, ge=0)
 
 
+class EvalSummary(BaseModel):
+    total: int
+    passed: int
+    accuracy: float
+    p95_latency_ms: int
+    avg_cost_usd: float
+    passed_thresholds: bool
+
+
 class EvalRunResponse(BaseModel):
-    summary: dict
+    summary: EvalSummary

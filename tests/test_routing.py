@@ -1,3 +1,4 @@
+from app.config import settings
 from app.routing import ProviderHealth, RoutingPolicy
 
 
@@ -19,6 +20,6 @@ def test_routing_tier_selects_model():
 
     decision = policy.choose("pro", health)
 
-    assert decision.model == "mock-2"
+    assert decision.model == settings.model_pro
     assert decision.provider == "primary"
     assert decision.fallback_provider == "fallback"

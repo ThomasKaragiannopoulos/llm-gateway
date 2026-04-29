@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app.auth import hash_api_key
 from app.db.base import Base
 from app.db.models import AdminAction, ApiKey, Request, Tenant, UsageEvent
+from app.routing import ProviderHealth, RoutingPolicy
 
 
 class FakeRedis:
@@ -34,6 +35,9 @@ class FakeRedis:
         return value
 
     async def expire(self, key: str, seconds: int):
+        return True
+
+    async def ping(self):
         return True
 
     async def close(self):
@@ -92,12 +96,14 @@ def _load_test_app(tmp_path: Path):
         return SessionLocal()
 
     fake_redis = FakeRedis()
-    main.get_session = get_session
     main.Redis.from_url = lambda *args, **kwargs: fake_redis
-    main.redis_client = fake_redis
-    main.providers = {"primary": FakeProvider(), "fallback": FakeProvider()}
-    main.health_tracker.reset()
-    main.RAG_ENABLED = False
+    main.override_runtime_for_tests(
+        session_factory=get_session,
+        redis_client=fake_redis,
+        providers={"primary": FakeProvider(), "fallback": FakeProvider()},
+        health_tracker=ProviderHealth(window_size=50, min_samples=1),
+        routing_policy=RoutingPolicy(error_rate_threshold=0.5),
+    )
 
     main.ensure_admin_key()
 
@@ -177,7 +183,7 @@ def test_rate_limit_response(monkeypatch, tmp_path):
     monkeypatch.setenv("ADMIN_API_KEY", "admin-secret")
     main, SessionLocal, fake_redis = _load_test_app(tmp_path)
     _seed_api_key(SessionLocal, "tenant-secret")
-    main.REQUESTS_PER_MINUTE = 1
+    monkeypatch.setattr(main.settings, "requests_per_minute", 1)
     fake_redis.store.clear()
 
     with TestClient(main.app) as client:
