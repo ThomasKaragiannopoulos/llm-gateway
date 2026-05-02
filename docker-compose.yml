@@ -19,18 +19,6 @@ services:
       - postgres
       - redis
 
-  ui:
-    build:
-      context: ./frontend
-    container_name: llm-ui
-    ports:
-      - "5173:5173"
-    environment:
-      VITE_GATEWAY_URL: http://localhost:8000
-      VITE_DEFAULT_MODEL: tinyllama:latest
-    depends_on:
-      - gateway
-
   postgres:
     image: postgres:16
     container_name: llm-postgres

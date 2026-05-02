@@ -96,10 +96,6 @@ class ObservabilitySummaryResponse(BaseModel):
     tenant: str | None = None
 
 
-class UiKeysTelemetryRequest(BaseModel):
-    displayed_count: int = Field(ge=0)
-
-
 class AdminStatusResponse(BaseModel):
     admin_initialized: bool
 

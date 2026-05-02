@@ -47,7 +47,6 @@ from app.schemas import (
     LimitsRequest,
     LimitsResponse,
     UsageSummaryResponse,
-    UiKeysTelemetryRequest,
     AdminStatusResponse,
     TenantInfo,
     TenantListResponse,
@@ -804,28 +803,6 @@ async def create_key(payload: CreateKeyRequest, request: Request):
         db.close()
 
     return CreateKeyResponse(tenant=requested_name, api_key=raw_key)
-
-
-@app.post("/v1/ui/keys/telemetry")
-async def ui_keys_telemetry(payload: UiKeysTelemetryRequest, request: Request):
-    db = get_session()
-    try:
-        total_keys = db.query(ApiKey).count()
-        active_keys = db.query(ApiKey).filter(ApiKey.active.is_(True)).count()
-    finally:
-        db.close()
-    logger.info(
-        json.dumps(
-            {
-                "message": "ui_keys_telemetry",
-                "displayed_count": payload.displayed_count,
-                "sql_total": int(total_keys),
-                "sql_active": int(active_keys),
-            },
-            separators=(",", ":"),
-        )
-    )
-    return {"status": "ok"}
 
 
 @app.get("/v1/admin/status", response_model=AdminStatusResponse)
