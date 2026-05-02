@@ -102,3 +102,64 @@ class UiKeysTelemetryRequest(BaseModel):
 
 class AdminStatusResponse(BaseModel):
     admin_initialized: bool
+
+
+class TenantInfo(BaseModel):
+    tenant: str
+    tier: str
+    created_at: str | None = None
+    token_limit_per_day: int | None = None
+    spend_limit_per_day_usd: float | None = None
+
+
+class TenantListResponse(BaseModel):
+    tenants: list[TenantInfo]
+
+
+class CreateTenantRequest(BaseModel):
+    tenant: str = Field(min_length=1)
+    tier: str | None = None
+
+
+class CreateTenantResponse(BaseModel):
+    tenant: str
+    tier: str
+
+
+class TenantKeyInfo(BaseModel):
+    name: str | None
+    active: bool
+    created_at: str | None = None
+    last_used_at: str | None = None
+    revoked_at: str | None = None
+    revoked_reason: str | None = None
+    key_last6: str | None = None
+
+
+class TenantKeyListResponse(BaseModel):
+    keys: list[TenantKeyInfo]
+
+
+class CreateTenantKeyRequest(BaseModel):
+    name: str = Field(min_length=1)
+
+
+class CreateTenantKeyResponse(BaseModel):
+    tenant: str
+    name: str
+    api_key: str
+
+
+class VerifyKeyRequest(BaseModel):
+    tenant: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+
+
+class VerifyKeyResponse(BaseModel):
+    matches: bool
+
+
+class RevokeKeyByNameRequest(BaseModel):
+    name: str = Field(min_length=1)
+    reason: str | None = None

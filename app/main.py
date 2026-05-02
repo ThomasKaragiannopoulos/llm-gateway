@@ -30,10 +30,11 @@ from app.db.models import ApiKey, Pricing, Tenant, UsageEvent
 from app.db.session import get_session
 from app.mock_provider import MockProvider
 from app.ollama_provider import OllamaProvider
+from app.openai_provider import OpenAIProvider
 from app.pricing import cost_usd
 from app.pricing import merge_pricing
 from app.provider import StreamChunk
-from app.routing import ProviderHealth, RoutingPolicy
+from app.routing import ProviderHealth, RouteDecision, RoutingPolicy
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -48,6 +49,17 @@ from app.schemas import (
     UsageSummaryResponse,
     UiKeysTelemetryRequest,
     AdminStatusResponse,
+    TenantInfo,
+    TenantListResponse,
+    CreateTenantRequest,
+    CreateTenantResponse,
+    TenantKeyInfo,
+    TenantKeyListResponse,
+    CreateTenantKeyRequest,
+    CreateTenantKeyResponse,
+    VerifyKeyRequest,
+    VerifyKeyResponse,
+    RevokeKeyByNameRequest,
 )
 
 app = FastAPI(title="llm-gateway")
@@ -64,16 +76,21 @@ PRIMARY_FAIL_RATE = float(os.getenv("PRIMARY_FAIL_RATE", "0"))
 FALLBACK_FAIL_RATE = float(os.getenv("FALLBACK_FAIL_RATE", "0"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 PROVIDER_MODE = os.getenv("PROVIDER_MODE", "mock")
 if PROVIDER_MODE == "ollama":
     providers = {
         "primary": OllamaProvider(base_url=OLLAMA_URL),
         "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
+        "mock": MockProvider(delay_ms=100),
+        "openai": OpenAIProvider(api_key=OPENAI_API_KEY),
     }
 else:
     providers = {
         "primary": MockProvider(delay_ms=200, fail_rate=PRIMARY_FAIL_RATE),
         "fallback": MockProvider(delay_ms=100, fail_rate=FALLBACK_FAIL_RATE),
+        "mock": MockProvider(delay_ms=100),
+        "openai": OpenAIProvider(api_key=OPENAI_API_KEY),
     }
 HEALTH_MIN_SAMPLES = int(os.getenv("HEALTH_MIN_SAMPLES", "5"))
 HEALTH_ERROR_THRESHOLD = float(os.getenv("HEALTH_ERROR_THRESHOLD", "0.5"))
@@ -149,6 +166,7 @@ CACHE_MISSES_TOTAL = Counter(
 )
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
+GRAFANA_URL = os.getenv("GRAFANA_URL", "http://grafana:3000")
 
 
 @app.get("/health")
@@ -159,6 +177,30 @@ def health():
 @app.get("/metrics")
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/health/grafana")
+async def grafana_health():
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(f"{GRAFANA_URL}/api/health")
+            if resp.status_code != 200:
+                return JSONResponse(status_code=503, content={"status": "down"})
+            return {"status": "ok"}
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "down"})
+
+
+@app.get("/health/prometheus")
+async def prometheus_health():
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(f"{PROMETHEUS_URL}/-/healthy")
+            if resp.status_code != 200:
+                return JSONResponse(status_code=503, content={"status": "down"})
+            return {"status": "ok"}
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "down"})
+
 
 @app.get("/health/ollama")
 async def ollama_health():
@@ -304,6 +346,14 @@ def _cache_key(tenant_id: str | None, payload: ChatRequest) -> str:
     return f"cache:chat:{CACHE_VERSION}:{tenant_part}:{digest}"
 
 
+def _explicit_route(model: str) -> "RouteDecision | None":
+    if model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3"):
+        return RouteDecision(model=model, provider="openai", reason=f"model:{model}")
+    if model.startswith("mock"):
+        return RouteDecision(model=model, provider="mock", reason="model:mock")
+    return None
+
+
 def _estimate_tokens(messages: list, content: str) -> int:
     text = " ".join([getattr(m, "content", "") for m in messages]) + " " + content
     return max(1, len(text) // 4)
@@ -331,7 +381,7 @@ async def chat(payload: ChatRequest, request: Request, response: Response):
                 db.commit()
                 db.refresh(tenant)
 
-        decision = routing_policy.choose(tenant.tier, health_tracker)
+        decision = _explicit_route(payload.model) or routing_policy.choose(tenant.tier, health_tracker)
         model_name = decision.model
         if isinstance(providers.get(decision.provider), OllamaProvider):
             model_name = OLLAMA_MODEL
@@ -521,7 +571,7 @@ async def chat_stream(payload: ChatRequest, request: Request):
                     db.commit()
                     db.refresh(tenant)
 
-            decision = routing_policy.choose(tenant.tier, health_tracker)
+            decision = _explicit_route(payload.model) or routing_policy.choose(tenant.tier, health_tracker)
             model_name = decision.model
             if isinstance(providers.get(decision.provider), OllamaProvider):
                 model_name = OLLAMA_MODEL
@@ -878,6 +928,144 @@ async def delete_key(key_id: str, request: Request):
 
     return {"status": "ok"}
 
+@app.get("/v1/admin/tenants", response_model=TenantListResponse)
+async def list_tenants(request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        rows = db.query(Tenant).order_by(Tenant.created_at.desc()).all()
+        tenants = [
+            TenantInfo(
+                tenant=t.name,
+                tier=t.tier,
+                created_at=t.created_at.isoformat() if t.created_at else None,
+                token_limit_per_day=t.token_limit_per_day,
+                spend_limit_per_day_usd=t.spend_limit_per_day_usd,
+            )
+            for t in rows
+        ]
+    finally:
+        db.close()
+
+    return TenantListResponse(tenants=tenants)
+
+
+@app.post("/v1/admin/tenants", response_model=CreateTenantResponse)
+async def create_tenant(payload: CreateTenantRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        existing = db.query(Tenant).filter(Tenant.name == payload.tenant).one_or_none()
+        if existing is not None:
+            return JSONResponse(status_code=409, content={"error": {"code": "conflict", "message": "Tenant already exists"}})
+        tier = payload.tier.strip() if payload.tier and payload.tier.strip() else "free"
+        tenant = Tenant(name=payload.tenant, tier=tier)
+        db.add(tenant)
+        db.commit()
+    finally:
+        db.close()
+
+    return CreateTenantResponse(tenant=payload.tenant, tier=tier)
+
+
+@app.get("/v1/admin/tenants/{tenant_name}/keys", response_model=TenantKeyListResponse)
+async def list_tenant_keys(tenant_name: str, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.name == tenant_name).one_or_none()
+        if tenant is None:
+            return JSONResponse(status_code=404, content={"error": {"code": "not_found", "message": "Tenant not found"}})
+        keys = [
+            TenantKeyInfo(
+                name=k.name,
+                active=bool(k.active),
+                created_at=k.created_at.isoformat() if k.created_at else None,
+                key_last6=k.key_hash[-6:] if k.key_hash else None,
+            )
+            for k in tenant.api_keys
+        ]
+    finally:
+        db.close()
+
+    return TenantKeyListResponse(keys=keys)
+
+
+@app.post("/v1/admin/tenants/{tenant_name}/keys", response_model=CreateTenantKeyResponse)
+async def create_tenant_key(tenant_name: str, payload: CreateTenantKeyRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.name == tenant_name).one_or_none()
+        if tenant is None:
+            return JSONResponse(status_code=404, content={"error": {"code": "not_found", "message": "Tenant not found"}})
+        raw_key = str(uuid.uuid4())
+        key_hash = hash_api_key(raw_key)
+        db.add(ApiKey(tenant_id=tenant.id, name=payload.name, key_hash=key_hash, active=True))
+        db.commit()
+    finally:
+        db.close()
+
+    return CreateTenantKeyResponse(tenant=tenant_name, name=payload.name, api_key=raw_key)
+
+
+@app.post("/v1/admin/keys/verify", response_model=VerifyKeyResponse)
+async def verify_key(payload: VerifyKeyRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    key_hash = hash_api_key(payload.api_key)
+    db = get_session()
+    try:
+        row = (
+            db.query(ApiKey)
+            .join(Tenant, Tenant.id == ApiKey.tenant_id)
+            .filter(Tenant.name == payload.tenant, ApiKey.name == payload.name, ApiKey.key_hash == key_hash, ApiKey.active.is_(True))
+            .one_or_none()
+        )
+    finally:
+        db.close()
+
+    return VerifyKeyResponse(matches=row is not None)
+
+
+@app.post("/v1/admin/tenants/{tenant_name}/keys/revoke")
+async def revoke_tenant_key(tenant_name: str, payload: RevokeKeyByNameRequest, request: Request):
+    admin_id = _get_admin_tenant_id()
+    if admin_id is None or str(request.state.tenant_id) != str(admin_id):
+        return JSONResponse(status_code=403, content={"error": {"code": "forbidden", "message": "Admin only"}})
+
+    db = get_session()
+    try:
+        row = (
+            db.query(ApiKey)
+            .join(Tenant, Tenant.id == ApiKey.tenant_id)
+            .filter(Tenant.name == tenant_name, ApiKey.name == payload.name, ApiKey.active.is_(True))
+            .one_or_none()
+        )
+        if row is None:
+            return JSONResponse(status_code=404, content={"error": {"code": "not_found", "message": "Active key not found"}})
+        row.active = False
+        db.commit()
+    finally:
+        db.close()
+
+    return {"status": "ok"}
+
+
 @app.post("/v1/admin/rotate")
 async def rotate_admin():
     allow_reset = os.getenv("ALLOW_ADMIN_RESET", "false").lower() in ("1", "true", "yes")
@@ -1079,6 +1267,8 @@ async def api_key_auth(request: Request, call_next):
         "/health",
         "/metrics",
         "/health/ollama",
+        "/health/grafana",
+        "/health/prometheus",
         "/v1/admin/bootstrap",
         "/v1/admin/rotate",
         "/v1/admin/status",
@@ -1113,7 +1303,7 @@ async def api_key_auth(request: Request, call_next):
 async def rate_limit_requests(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
-    if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
+    if request.url.path in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"} or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
     if redis_client is None:
@@ -1161,7 +1351,7 @@ async def rate_limit_requests(request: Request, call_next):
 async def quota_limits(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
-    if request.url.path in {"/health", "/metrics", "/health/ollama"} or request.url.path.startswith("/v1/admin"):
+    if request.url.path in {"/health", "/metrics", "/health/ollama", "/health/grafana", "/health/prometheus"} or request.url.path.startswith("/v1/admin"):
         return await call_next(request)
 
     tenant_id = getattr(request.state, "tenant_id", None)
