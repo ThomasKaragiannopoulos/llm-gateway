@@ -56,6 +56,7 @@ class CreateKeyRequest(BaseModel):
 
 class CreateKeyResponse(BaseModel):
     tenant: str
+    name: str
     api_key: str
 
 

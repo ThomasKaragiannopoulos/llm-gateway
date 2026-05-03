@@ -18,6 +18,9 @@ ENV/
 .ruff_cache/
 *.log
 
+# Local databases
+*.db
+
 # OS / IDE
 .DS_Store
 Thumbs.db

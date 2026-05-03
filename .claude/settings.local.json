@@ -1,8 +1,16 @@
 {
   "permissions": {
     "allow": [
+<<<<<<< HEAD
       "Bash(gh api:*)",
       "Bash(node -e \"const d=require\\(''''fs''''\\).readFileSync\\(''''/dev/stdin'''',''''utf8''''\\); const commits=JSON.parse\\(d\\); commits.filter\\(c=>c.commit.message.toLowerCase\\(\\).includes\\(''''claude''''\\)||c.commit.message.toLowerCase\\(\\).includes\\(''''co-authored''''\\)\\).forEach\\(c=>console.log\\(c.sha.slice\\(0,7\\), c.commit.message.split\\(''''\\\\n''''\\)[0]\\)\\)\")"
+=======
+      "Bash(gh repo:*)",
+      "Bash(gh --version)",
+      "Bash(winget install:*)",
+      "mcp__codebase-memory-mcp__list_projects",
+      "mcp__codebase-memory-mcp__get_architecture"
+>>>>>>> 502757b67f544a2eb8e37bb4672852a15acc2a5d
     ]
   }
 }

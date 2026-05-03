@@ -19,13 +19,15 @@ DEFAULT_BOOTSTRAP_ADMIN_TOKEN = "bootstrap-admin-token"
 
 
 class Settings(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict()
 
     allowed_origins: list[str]
     primary_fail_rate: float = Field(ge=0.0, le=1.0)
     fallback_fail_rate: float = Field(ge=0.0, le=1.0)
     ollama_url: str = Field(min_length=1)
     ollama_model: str = Field(min_length=1)
+    model_free: str = Field(default="gpt-4o-mini", min_length=1)
+    model_pro: str = Field(default="gpt-4o", min_length=1)
     openai_api_key: str = ""
     provider_mode: str
     health_min_samples: int = Field(ge=1)
@@ -47,8 +49,8 @@ class Settings(BaseModel):
     @field_validator("provider_mode")
     @classmethod
     def validate_provider_mode(cls, value: str) -> str:
-        if value not in {"mock", "ollama"}:
-            raise ValueError("provider_mode must be one of: mock, ollama")
+        if value not in {"mock", "ollama", "openai"}:
+            raise ValueError("provider_mode must be one of: mock, ollama, openai")
         return value
 
     @field_validator("environment")
@@ -60,7 +62,7 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def validate_secret_defaults(self) -> Settings:
-        if self.environment != "test" and self.bootstrap_admin_token == DEFAULT_BOOTSTRAP_ADMIN_TOKEN:
+        if self.environment in {"stage", "prod"} and self.bootstrap_admin_token == DEFAULT_BOOTSTRAP_ADMIN_TOKEN:
             raise ValueError("bootstrap_admin_token must not use the default value outside tests")
         if self.environment in {"stage", "prod"} and not self.api_key_pepper:
             raise ValueError("api_key_pepper is required in stage and prod")
@@ -75,6 +77,8 @@ class Settings(BaseModel):
             fallback_fail_rate=float(os.getenv("FALLBACK_FAIL_RATE", "0")),
             ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+            model_free=os.getenv("MODEL_FREE", "gpt-4o-mini"),
+            model_pro=os.getenv("MODEL_PRO", "gpt-4o"),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             provider_mode=os.getenv("PROVIDER_MODE", "mock"),
             health_min_samples=int(os.getenv("HEALTH_MIN_SAMPLES", "5")),
@@ -88,7 +92,7 @@ class Settings(BaseModel):
             grafana_url=os.getenv("GRAFANA_URL", "http://grafana:3000"),
             admin_api_key=os.getenv("ADMIN_API_KEY", ""),
             api_key_pepper=os.getenv("API_KEY_PEPPER", ""),
-            bootstrap_admin_token=os.getenv("BOOTSTRAP_ADMIN_TOKEN", ""),
+            bootstrap_admin_token=os.getenv("BOOTSTRAP_ADMIN_TOKEN", DEFAULT_BOOTSTRAP_ADMIN_TOKEN),
             allow_admin_reset=_parse_bool(os.getenv("ALLOW_ADMIN_RESET"), default=False),
             environment=os.getenv("APP_ENV", "dev"),
             database_url=os.getenv(
@@ -96,3 +100,6 @@ class Settings(BaseModel):
                 "postgresql+psycopg://llm:llm@localhost:1312/llm_gateway",
             ),
         )
+
+
+settings = Settings.from_env()

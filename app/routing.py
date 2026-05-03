@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 
+from app.config import settings
+
 
 @dataclass(frozen=True)
 class RouteDecision:
@@ -42,17 +44,24 @@ class RoutingPolicy:
 
     def choose(self, tier: str, health: ProviderHealth) -> RouteDecision:
         if tier == "pro":
-            model = "mock-2"
+            model = settings.model_pro
             primary = "primary"
             fallback = "fallback"
             reason = "tier:pro"
         else:
-            model = "mock-1"
+            model = settings.model_free
             primary = "primary"
             fallback = "fallback"
             reason = "tier:free"
 
         if health.error_rate(primary) > self.error_rate_threshold:
-            return RouteDecision(model=model, provider=fallback, reason="primary_unhealthy", fallback_provider=primary)
+            return RouteDecision(
+                model=model,
+                provider=fallback,
+                reason="primary_unhealthy",
+                fallback_provider=primary,
+            )
 
-        return RouteDecision(model=model, provider=primary, reason=reason, fallback_provider=fallback)
+        return RouteDecision(
+            model=model, provider=primary, reason=reason, fallback_provider=fallback
+        )
