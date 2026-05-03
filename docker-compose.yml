@@ -11,8 +11,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://llm:llm@postgres:5432/llm_gateway
       ALLOW_ADMIN_RESET: "true"
+      APP_ENV: dev
       PROMETHEUS_URL: http://prometheus:9090
       ADMIN_API_KEY: sk-admin-demo
+      BOOTSTRAP_ADMIN_TOKEN: bootstrap-admin-token
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:

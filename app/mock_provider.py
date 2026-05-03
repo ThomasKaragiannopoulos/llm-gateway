@@ -1,8 +1,9 @@
 import asyncio
 import time
 import uuid
+from collections.abc import AsyncIterator
 
-from app.provider import Provider, ProviderResult, StreamChunk
+from app.provider import Provider, ProviderRequestError, ProviderResult, StreamChunk
 from app.schemas import ChatRequest, ChatResponse
 
 
@@ -16,7 +17,7 @@ class MockProvider(Provider):
             import random
 
             if random.random() < self.fail_rate:
-                raise RuntimeError("mock provider failure")
+                raise ProviderRequestError("mock provider failure")
         await asyncio.sleep(self.delay_ms / 1000)
         content = "mock response"
         response = ChatResponse(
@@ -35,7 +36,7 @@ class MockProvider(Provider):
             total_tokens=total_tokens,
         )
 
-    async def stream(self, request: ChatRequest):
+    async def stream(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
         await asyncio.sleep(self.delay_ms / 1000)
         yield StreamChunk(content="mock ")
         await asyncio.sleep(self.delay_ms / 1000)

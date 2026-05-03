@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from app.schemas import ChatRequest, ChatResponse
@@ -24,11 +24,23 @@ class StreamChunk:
     completion_tokens: int | None = None
 
 
+class ProviderError(RuntimeError):
+    pass
+
+
+class ProviderRequestError(ProviderError):
+    pass
+
+
+class ProviderStreamError(ProviderError):
+    pass
+
+
 class Provider(ABC):
     @abstractmethod
     async def generate(self, request: ChatRequest) -> ProviderResult:
         raise NotImplementedError
 
     @abstractmethod
-    async def stream(self, request: ChatRequest):
+    def stream(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
         raise NotImplementedError

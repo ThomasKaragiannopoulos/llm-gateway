@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)",
+      "Bash(node -e \"const d=require\\(''''fs''''\\).readFileSync\\(''''/dev/stdin'''',''''utf8''''\\); const commits=JSON.parse\\(d\\); commits.filter\\(c=>c.commit.message.toLowerCase\\(\\).includes\\(''''claude''''\\)||c.commit.message.toLowerCase\\(\\).includes\\(''''co-authored''''\\)\\).forEach\\(c=>console.log\\(c.sha.slice\\(0,7\\), c.commit.message.split\\(''''\\\\n''''\\)[0]\\)\\)\")"
+    ]
+  }
+}

@@ -3,6 +3,15 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class StatusResponse(BaseModel):
+    status: str
+
+
+class ReadyResponse(StatusResponse):
+    environment: str
+    checks: dict[str, str]
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str = Field(min_length=1)
@@ -30,6 +39,14 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorDetail
+
+
+class BootstrapAdminResponse(BaseModel):
+    api_key: str
+
+
+class DeleteResponse(BaseModel):
+    status: str
 
 
 class CreateKeyRequest(BaseModel):

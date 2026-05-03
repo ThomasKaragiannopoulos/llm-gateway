@@ -10,6 +10,7 @@ dependencies = [
     "alembic (>=1.13.2,<2.0.0)",
     "fastapi (>=0.128.0,<0.129.0)",
     "httpx (>=0.28.1,<0.29.0)",
+    "pydantic[email] (>=2.11.0,<3.0.0)",
     "sqlalchemy (>=2.0.30,<3.0.0)",
     "redis (>=5.2.0,<6.0.0)",
     "psycopg[binary] (>=3.2.4,<4.0.0)",
@@ -23,9 +24,33 @@ package-mode = false
 [dependency-groups]
 dev = [
     "ruff (>=0.15.0,<0.16.0)",
-    "pytest (>=9.0.2,<10.0.0)"
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-asyncio (>=1.2.0,<2.0.0)",
+    "pytest-cov (>=6.2.1,<7.0.0)",
+    "mypy (>=1.18.2,<2.0.0)"
 ]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["alembic", "frontend", "grafana", "prometheus"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+follow_imports = "skip"
+files = ["app", "tests", "scripts"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_any_generics = false
