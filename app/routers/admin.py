@@ -5,9 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Request
 
 from app.auth import candidate_api_key_hashes
-from app.db.repositories import ApiKeyRepository, RequestRepository, TenantRepository
-from app.db.session import session_scope
-from app.errors import ConflictError, ForbiddenError, InvalidRequestError, NotFoundError
+from app.errors import ForbiddenError, InvalidRequestError, NotFoundError
 from app.runtime import AppRuntime
 from app.schemas import (
     AdminStatusResponse,
@@ -44,10 +42,25 @@ from app.services.admin import (
     get_key_rows,
     get_pricing_rows,
     rotate_admin_key,
+    set_tenant_limits,
+    tenant_usage_summary,
     upsert_pricing,
+    verify_tenant_key,
 )
 from app.services.admin import (
     admin_status as admin_status_value,
+)
+from app.services.admin import (
+    create_tenant as create_tenant_value,
+)
+from app.services.admin import (
+    list_tenant_keys as list_tenant_keys_value,
+)
+from app.services.admin import (
+    list_tenants as list_tenants_value,
+)
+from app.services.admin import (
+    revoke_tenant_key as revoke_tenant_key_value,
 )
 from app.services.observability import prom_query
 
@@ -133,51 +146,41 @@ async def delete_key(key_id: str, request: Request):
 @router.get("/admin/tenants", response_model=TenantListResponse)
 async def list_tenants(request: Request):
     runtime, _ = _require_admin(request)
-    with session_scope(runtime.session_factory) as db:
-        rows = TenantRepository(db).list_all()
-        tenants = [
-            TenantInfo(
-                tenant=row.name,
-                tier=row.tier,
-                created_at=row.created_at.isoformat() if row.created_at else None,
-                token_limit_per_day=row.token_limit_per_day,
-                spend_limit_per_day_usd=row.spend_limit_per_day_usd,
-            )
-            for row in rows
-        ]
-        return TenantListResponse(tenants=tenants)
+    rows = list_tenants_value(runtime)
+    tenants = [
+        TenantInfo(
+            tenant=row.name,
+            tier=row.tier,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+            token_limit_per_day=row.token_limit_per_day,
+            spend_limit_per_day_usd=row.spend_limit_per_day_usd,
+        )
+        for row in rows
+    ]
+    return TenantListResponse(tenants=tenants)
 
 
 @router.post("/admin/tenants", response_model=CreateTenantResponse)
 async def create_tenant(payload: CreateTenantRequest, request: Request):
     runtime, _ = _require_admin(request)
-    with session_scope(runtime.session_factory) as db:
-        tenants = TenantRepository(db)
-        existing = tenants.get_by_name(payload.tenant)
-        if existing is not None:
-            raise ConflictError("Tenant already exists")
-        tier = _normalize_tier(payload.tier)
-        tenants.create(payload.tenant, tier=tier)
-        return CreateTenantResponse(tenant=payload.tenant, tier=tier)
+    tier = _normalize_tier(payload.tier)
+    create_tenant_value(runtime, payload.tenant, tier)
+    return CreateTenantResponse(tenant=payload.tenant, tier=tier)
 
 
 @router.get("/admin/tenants/{tenant_name}/keys", response_model=TenantKeyListResponse)
 async def list_tenant_keys(tenant_name: str, request: Request):
     runtime, _ = _require_admin(request)
-    with session_scope(runtime.session_factory) as db:
-        tenant = TenantRepository(db).get_by_name(tenant_name)
-        if tenant is None:
-            raise NotFoundError("Tenant not found")
-        keys = [
-            TenantKeyInfo(
-                name=key.name,
-                active=bool(key.active),
-                created_at=key.created_at.isoformat() if key.created_at else None,
-                key_last6=key.key_hash[-6:] if key.key_hash else None,
-            )
-            for key in tenant.api_keys
-        ]
-        return TenantKeyListResponse(keys=keys)
+    keys = [
+        TenantKeyInfo(
+            name=key.name,
+            active=bool(key.active),
+            created_at=key.created_at.isoformat() if key.created_at else None,
+            key_last6=key.key_hash[-6:] if key.key_hash else None,
+        )
+        for key in list_tenant_keys_value(runtime, tenant_name)
+    ]
+    return TenantKeyListResponse(keys=keys)
 
 
 @router.post("/admin/tenants/{tenant_name}/keys", response_model=CreateTenantKeyResponse)
@@ -192,20 +195,14 @@ async def create_tenant_key(tenant_name: str, payload: CreateTenantKeyRequest, r
 async def verify_key(payload: VerifyKeyRequest, request: Request):
     runtime, _ = _require_admin(request)
     key_hashes = candidate_api_key_hashes(payload.api_key, runtime.settings.api_key_pepper)
-    with session_scope(runtime.session_factory) as db:
-        return VerifyKeyResponse(
-            matches=ApiKeyRepository(db).matches_any_hash(payload.tenant, payload.name, key_hashes)
-        )
+    return VerifyKeyResponse(matches=verify_tenant_key(runtime, payload.tenant, payload.name, key_hashes))
 
 
 @router.post("/admin/tenants/{tenant_name}/keys/revoke", response_model=DeleteResponse)
 async def revoke_tenant_key(tenant_name: str, payload: RevokeKeyByNameRequest, request: Request):
     runtime, _ = _require_admin(request)
-    with session_scope(runtime.session_factory) as db:
-        row = ApiKeyRepository(db).deactivate_active_by_tenant_and_name(tenant_name, payload.name)
-        if row is None:
-            raise NotFoundError("Active key not found")
-        return DeleteResponse(status="ok")
+    revoke_tenant_key_value(runtime, tenant_name, payload.name)
+    return DeleteResponse(status="ok")
 
 
 @router.post("/admin/rotate", response_model=BootstrapAdminResponse)
@@ -219,21 +216,17 @@ async def rotate_admin(request: Request):
 @router.post("/admin/limits", response_model=LimitsResponse)
 async def set_limits(payload: LimitsRequest, request: Request):
     runtime, _ = _require_admin(request)
-    with session_scope(runtime.session_factory) as db:
-        tenants = TenantRepository(db)
-        tenant = tenants.get_by_name(payload.tenant)
-        if tenant is None:
-            raise NotFoundError("Tenant not found")
-        tenant = tenants.update_limits(
-            tenant,
-            token_limit_per_day=payload.token_limit_per_day,
-            spend_limit_per_day_usd=payload.spend_limit_per_day_usd,
-        )
-        return LimitsResponse(
-            tenant=payload.tenant,
-            token_limit_per_day=tenant.token_limit_per_day,
-            spend_limit_per_day_usd=tenant.spend_limit_per_day_usd,
-        )
+    tenant = set_tenant_limits(
+        runtime,
+        payload.tenant,
+        token_limit_per_day=payload.token_limit_per_day,
+        spend_limit_per_day_usd=payload.spend_limit_per_day_usd,
+    )
+    return LimitsResponse(
+        tenant=payload.tenant,
+        token_limit_per_day=tenant.token_limit_per_day,
+        spend_limit_per_day_usd=tenant.spend_limit_per_day_usd,
+    )
 
 
 @router.post("/admin/health/reset", response_model=DeleteResponse)
@@ -246,13 +239,8 @@ async def reset_health(request: Request):
 @router.get("/admin/usage/{tenant_name}", response_model=UsageSummaryResponse)
 async def usage_summary(tenant_name: str, request: Request):
     runtime, _ = _require_admin(request)
-    with session_scope(runtime.session_factory) as db:
-        tenants = TenantRepository(db)
-        tenant = tenants.get_by_name(tenant_name)
-        if tenant is None:
-            raise NotFoundError("Tenant not found")
-        requests, tokens, cost = RequestRepository(db).get_request_counts(tenant.id)
-        return UsageSummaryResponse(tenant=tenant_name, requests=requests, tokens=tokens, cost_usd=cost)
+    requests, tokens, cost = tenant_usage_summary(runtime, tenant_name)
+    return UsageSummaryResponse(tenant=tenant_name, requests=requests, tokens=tokens, cost_usd=cost)
 
 
 @router.get("/observability/summary", response_model=ObservabilitySummaryResponse)

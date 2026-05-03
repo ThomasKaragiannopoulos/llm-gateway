@@ -2,11 +2,19 @@ from __future__ import annotations
 
 
 class AppError(Exception):
-    def __init__(self, code: str, message: str, status_code: int) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.headers = headers or {}
 
 
 class InvalidRequestError(AppError):
@@ -35,5 +43,12 @@ class ConflictError(AppError):
 
 
 class DependencyUnavailableError(AppError):
-    def __init__(self, code: str, message: str, status_code: int = 503) -> None:
-        super().__init__(code, message, status_code)
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int = 503,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(code, message, status_code, headers=headers)

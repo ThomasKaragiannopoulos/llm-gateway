@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from app.runtime import AppRuntime
@@ -29,3 +31,24 @@ async def prom_query(runtime: AppRuntime, query: str) -> float:
         return float(value[1])
     except (TypeError, ValueError):
         return 0.0
+
+
+def log_event(runtime: AppRuntime, message: str, **fields) -> None:
+    payload = {"message": message, **fields}
+    runtime.logger.info(json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str))
+
+
+def log_policy_event(runtime: AppRuntime, message: str, context, **fields) -> None:
+    payload = {
+        "path": context.path,
+        "method": context.method,
+        "request_id": context.request_id,
+        "tenant_id": getattr(context, "tenant_id", None),
+        "idempotency_key": getattr(context, "idempotency_key", None),
+    }
+    payload.update(fields)
+    log_event(runtime, message, **payload)
+
+
+def log_chat_event(runtime: AppRuntime, message: str, context, **fields) -> None:
+    log_policy_event(runtime, message, context, **fields)

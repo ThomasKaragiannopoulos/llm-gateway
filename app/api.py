@@ -12,6 +12,7 @@ def install_error_handlers(app: FastAPI) -> None:
     async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
+            headers=exc.headers,
             content={"error": {"code": exc.code, "message": exc.message}},
         )
 

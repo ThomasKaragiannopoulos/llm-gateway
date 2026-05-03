@@ -5,9 +5,6 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import Request
-from fastapi.responses import StreamingResponse
-
 from app.db.repositories import RequestRepository, UsageRepository
 from app.db.session import session_scope
 from app.metrics import FALLBACK_TOTAL
@@ -15,19 +12,23 @@ from app.provider import ProviderStreamError, StreamChunk
 from app.runtime import AppRuntime
 from app.schemas import ChatRequest, ChatResponse
 from app.services.chat_shared import (
+    StreamingChatExecutionResult,
     StreamingSessionState,
     build_completion_event,
     complete_request_record,
     cost_for_usage,
     estimate_stream_usage,
+    log_route_resolution,
     resolve_chat_request,
 )
+from app.services.contracts import DisconnectChecker, RequestContext
+from app.services.observability import log_chat_event
 from app.services.providers import format_sse
 
 
 async def stream_provider_chunks(
     runtime: AppRuntime,
-    request: Request,
+    disconnect_checker: DisconnectChecker,
     state: StreamingSessionState,
     *,
     provider_name: str,
@@ -36,7 +37,7 @@ async def stream_provider_chunks(
 ) -> AsyncIterator[str | StreamChunk]:
     provider = runtime.providers[provider_name]
     async for chunk in provider.stream(routed_payload):
-        if await request.is_disconnected():
+        if await disconnect_checker():
             raise asyncio.CancelledError()
         if chunk.content:
             state.content_parts.append(chunk.content)
@@ -84,7 +85,7 @@ async def emit_stream_completion(
 
 async def consume_stream(
     runtime: AppRuntime,
-    request: Request,
+    disconnect_checker: DisconnectChecker,
     state: StreamingSessionState,
     *,
     provider_name: str,
@@ -93,7 +94,7 @@ async def consume_stream(
 ) -> AsyncIterator[str]:
     async for chunk in stream_provider_chunks(
         runtime,
-        request,
+        disconnect_checker,
         state,
         provider_name=provider_name,
         routed_payload=routed_payload,
@@ -127,7 +128,12 @@ async def consume_stream(
             yield event
 
 
-async def execute_chat_stream(runtime: AppRuntime, payload: ChatRequest, request: Request) -> StreamingResponse:
+async def execute_chat_stream(
+    runtime: AppRuntime,
+    payload: ChatRequest,
+    context: RequestContext,
+    disconnect_checker: DisconnectChecker,
+) -> StreamingChatExecutionResult:
     started_at = time.perf_counter()
     state = StreamingSessionState(response_id=str(uuid.uuid4()), created=int(time.time()))
 
@@ -138,18 +144,22 @@ async def execute_chat_stream(runtime: AppRuntime, payload: ChatRequest, request
             req_row = None
             resolved = None
             try:
-                resolved = resolve_chat_request(runtime, db, payload, request, stream=True)
+                resolved = resolve_chat_request(runtime, db, payload, context, stream=True)
+                log_route_resolution(runtime, resolved)
                 state.used_provider = resolved.provider_name
-                req_row = requests.create_in_progress(
+                req_row = requests.begin_chat_request(
                     resolved.tenant.id,
                     resolved.model_name,
                     resolved.routed_payload.model_dump_json(),
+                    provider_name=resolved.provider_name,
+                    route_reason=resolved.route_reason,
+                    cache_status="bypass",
                 )
 
                 try:
                     async for chunk in consume_stream(
                         runtime,
-                        request,
+                        disconnect_checker,
                         state,
                         provider_name=resolved.provider_name,
                         routed_payload=resolved.routed_payload,
@@ -160,12 +170,21 @@ async def execute_chat_stream(runtime: AppRuntime, payload: ChatRequest, request
                     raise
                 except ProviderStreamError:
                     runtime.health_tracker.record(resolved.provider_name, False)
+                    log_chat_event(
+                        runtime,
+                        "provider_stream_failed",
+                        context,
+                        provider=resolved.provider_name,
+                        route_reason=resolved.route_reason,
+                    )
                     fallback_provider_name = resolved.fallback_provider_name
                     if fallback_provider_name and not state.content_parts:
                         FALLBACK_TOTAL.labels("primary_error", resolved.provider_name, fallback_provider_name).inc()
+                        req_row.provider_name = fallback_provider_name
+                        req_row.route_reason = "primary_error"
                         async for chunk in consume_stream(
                             runtime,
-                            request,
+                            disconnect_checker,
                             state,
                             provider_name=fallback_provider_name,
                             routed_payload=resolved.routed_payload,
@@ -199,12 +218,17 @@ async def execute_chat_stream(runtime: AppRuntime, payload: ChatRequest, request
                             started_at=started_at,
                         )
                     elif state.canceled:
-                        requests.mark_status(req_row, "canceled")
+                        requests.mark_canceled(req_row)
+                        log_chat_event(runtime, "chat_request_canceled", context, stage="stream")
                     elif state.failed:
-                        requests.mark_status(req_row, "failed")
+                        requests.mark_failed(req_row, failure_stage="stream", failure_code="stream_error")
+                        log_chat_event(runtime, "chat_request_failed", context, stage="stream", code="stream_error")
 
-    stream = StreamingResponse(event_generator(), media_type="text/event-stream")
-    stream.headers["Cache-Control"] = "no-cache"
-    stream.headers["X-Accel-Buffering"] = "no"
-    stream.headers["X-Cache"] = "bypass"
-    return stream
+    return StreamingChatExecutionResult(
+        body=event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Cache": "bypass",
+        },
+    )

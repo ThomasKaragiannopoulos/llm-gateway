@@ -131,6 +131,25 @@ def test_rate_limit_response(tmp_path) -> None:
     assert second.json()["error"]["code"] == "rate_limited"
 
 
+def test_rate_limit_dependency_down_returns_503(tmp_path) -> None:
+    runtime = _build_runtime(tmp_path)
+    runtime.redis_client = None
+    tenant_api_key = create_tenant_api_key(runtime, "default", "default")
+
+    with _client(runtime) as client:
+        response = client.post(
+            "/v1/chat",
+            headers=_auth_headers(tenant_api_key),
+            json={
+                "model": "tenant-default",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "rate_limit_unavailable"
+
+
 def test_quota_exceeded_response(tmp_path) -> None:
     runtime = _build_runtime(tmp_path)
     tenant_api_key = create_tenant_api_key(runtime, "quota-tenant", "default")
@@ -176,3 +195,4 @@ def test_quota_exceeded_response(tmp_path) -> None:
 
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "quota_exceeded"
+    assert response.headers["X-RateLimit-Tokens-Remaining"] == "0"

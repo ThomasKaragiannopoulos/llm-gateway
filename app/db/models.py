@@ -13,6 +13,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.db.base import Base
 
 
@@ -79,6 +80,11 @@ class Request(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     request_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    route_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    cache_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    failure_stage: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

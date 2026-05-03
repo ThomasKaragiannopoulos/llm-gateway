@@ -1,10 +1,11 @@
 
 import asyncio
+
 import pytest
 
 from app.provider import Provider, ProviderResult
-from app.schemas import ChatRequest, ChatResponse, ChatMessage
 from app.reliability import CircuitBreaker, CircuitOpenError, ResilientProvider, RetryConfig
+from app.schemas import ChatMessage, ChatRequest, ChatResponse
 
 
 class FlakyProvider(Provider):

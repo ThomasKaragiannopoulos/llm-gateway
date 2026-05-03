@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from typing import Literal
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.models import ApiKey, Pricing, Request, Tenant, UsageEvent
 
 ApiKeyWithTenant = tuple[ApiKey, Tenant]
+RequestStatus = Literal["in_progress", "completed", "failed", "canceled"]
 
 
 def get_tenant_by_id(db: Session, tenant_id: uuid.UUID | None) -> Tenant | None:
@@ -161,6 +163,15 @@ class ApiKeyRepository:
             .one_or_none()
         )
 
+    def authenticate_hashes(self, key_hashes: Sequence[str]) -> ApiKey | None:
+        row = self.get_active_by_hashes(key_hashes)
+        if row is None:
+            return None
+        row.last_used_at = func.now()
+        self.db.add(row)
+        self.db.flush()
+        return row
+
     def count(self) -> tuple[int, int]:
         return count_api_keys(self.db)
 
@@ -253,12 +264,61 @@ class RequestRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def create_in_progress(self, tenant_id, model: str, request_payload: str) -> Request:
-        row = Request(tenant_id=tenant_id, model=model, status="in_progress", request_payload=request_payload)
+    def begin_chat_request(
+        self,
+        tenant_id,
+        model: str,
+        request_payload: str,
+        *,
+        provider_name: str | None = None,
+        route_reason: str | None = None,
+        cache_status: str | None = None,
+    ) -> Request:
+        row = Request(
+            tenant_id=tenant_id,
+            model=model,
+            status="in_progress",
+            request_payload=request_payload,
+            provider_name=provider_name,
+            route_reason=route_reason,
+            cache_status=cache_status,
+        )
         self.db.add(row)
         self.db.flush()
         self.db.refresh(row)
         return row
+
+    def create_in_progress(self, tenant_id, model: str, request_payload: str) -> Request:
+        return self.begin_chat_request(tenant_id, model, request_payload)
+
+    def complete_chat_request(
+        self,
+        row: Request,
+        response_payload: str,
+        latency_ms: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cost_usd: float,
+        *,
+        provider_name: str,
+        route_reason: str,
+        cache_status: str,
+    ) -> None:
+        row.status = "completed"
+        row.response_payload = response_payload
+        row.provider_name = provider_name
+        row.route_reason = route_reason
+        row.cache_status = cache_status
+        row.failure_stage = None
+        row.failure_code = None
+        row.latency_ms = latency_ms
+        row.prompt_tokens = prompt_tokens
+        row.completion_tokens = completion_tokens
+        row.total_tokens = total_tokens
+        row.cost_usd = cost_usd
+        row.completed_at = func.now()
+        self.db.add(row)
 
     def mark_completed(
         self,
@@ -270,20 +330,38 @@ class RequestRepository:
         total_tokens: int,
         cost_usd: float,
     ) -> None:
-        row.status = "completed"
-        row.response_payload = response_payload
-        row.latency_ms = latency_ms
-        row.prompt_tokens = prompt_tokens
-        row.completion_tokens = completion_tokens
-        row.total_tokens = total_tokens
-        row.cost_usd = cost_usd
+        self.complete_chat_request(
+            row,
+            response_payload,
+            latency_ms,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cost_usd,
+            provider_name=row.provider_name or "unknown",
+            route_reason=row.route_reason or "unknown",
+            cache_status=row.cache_status or "bypass",
+        )
+
+    def mark_status(
+        self,
+        row: Request,
+        status: RequestStatus,
+        *,
+        failure_stage: str | None = None,
+        failure_code: str | None = None,
+    ) -> None:
+        row.status = status
+        row.failure_stage = failure_stage
+        row.failure_code = failure_code
         row.completed_at = func.now()
         self.db.add(row)
 
-    def mark_status(self, row: Request, status: str) -> None:
-        row.status = status
-        row.completed_at = func.now()
-        self.db.add(row)
+    def mark_failed(self, row: Request, *, failure_stage: str, failure_code: str) -> None:
+        self.mark_status(row, "failed", failure_stage=failure_stage, failure_code=failure_code)
+
+    def mark_canceled(self, row: Request, *, failure_stage: str = "stream") -> None:
+        self.mark_status(row, "canceled", failure_stage=failure_stage, failure_code="client_disconnected")
 
     def get_request_counts(self, tenant_id: uuid.UUID) -> tuple[int, int, float]:
         return get_request_counts(self.db, tenant_id)
@@ -293,7 +371,7 @@ class UsageRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def add(
+    def record_request_usage(
         self,
         tenant_id: uuid.UUID,
         request_id: uuid.UUID,
@@ -312,6 +390,16 @@ class UsageRepository:
         self.db.flush()
         self.db.refresh(event)
         return event
+
+    def add(
+        self,
+        tenant_id: uuid.UUID,
+        request_id: uuid.UUID,
+        model: str,
+        tokens: int,
+        cost_usd: float,
+    ) -> UsageEvent:
+        return self.record_request_usage(tenant_id, request_id, model, tokens, cost_usd)
 
     def daily_totals(self, tenant_id: uuid.UUID) -> tuple[int, float]:
         return get_daily_usage_totals(self.db, tenant_id)

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
-
-from fastapi import Request
 
 from app.db.models import Request as RequestRow
 from app.db.models import Tenant
@@ -24,6 +23,8 @@ from app.metrics import (
 from app.pricing import cost_usd, merge_pricing
 from app.runtime import AppRuntime
 from app.schemas import ChatRequest, ChatResponse
+from app.services.contracts import RequestContext
+from app.services.observability import log_chat_event
 from app.services.providers import (
     cache_key,
     cacheable_request,
@@ -40,6 +41,12 @@ class ChatExecutionResult:
 
 
 @dataclass(frozen=True)
+class StreamingChatExecutionResult:
+    body: AsyncIterator[str]
+    headers: dict[str, str]
+
+
+@dataclass(frozen=True)
 class UsageSnapshot:
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -48,6 +55,7 @@ class UsageSnapshot:
 
 @dataclass(frozen=True)
 class ResolvedChatRequest:
+    request_context: RequestContext
     tenant: Tenant
     model_name: str
     routed_payload: ChatRequest
@@ -71,6 +79,21 @@ class ProviderExecution:
     cost_usd: float
     provider_name: str
     route_reason: str
+
+
+@dataclass(frozen=True)
+class RequestFailure:
+    stage: str
+    code: str
+
+
+@dataclass(frozen=True)
+class CompletedRequest:
+    provider_name: str
+    route_reason: str
+    cache_status: str
+    usage: UsageSnapshot
+    cost_usd: float
 
 
 @dataclass
@@ -109,9 +132,9 @@ def cost_for_usage(db, model_name: str, usage: UsageSnapshot, *, cached_tokens: 
     )
 
 
-def resolve_tenant(db, request: Request) -> Tenant:
+def resolve_tenant(db, context: RequestContext) -> Tenant:
     tenants = TenantRepository(db)
-    tenant_id = getattr(request.state, "tenant_id", None)
+    tenant_id = context.tenant_id
     tenant = tenants.get_by_id(tenant_id) if tenant_id is not None else None
     return tenant or tenants.ensure_default()
 
@@ -120,11 +143,11 @@ def resolve_chat_request(
     runtime: AppRuntime,
     db,
     payload: ChatRequest,
-    request: Request,
+    context: RequestContext,
     *,
     stream: bool = False,
 ) -> ResolvedChatRequest:
-    tenant = resolve_tenant(db, request)
+    tenant = resolve_tenant(db, context)
     decision = resolve_route(runtime, tenant.tier, payload.model)
     model_name = resolve_model_name(runtime, decision.provider, decision.model)
     routed_payload = payload.model_copy(update={"model": model_name, "stream": stream})
@@ -132,6 +155,7 @@ def resolve_chat_request(
     if runtime.redis_client is not None and cacheable_request(routed_payload):
         lookup_key = cache_key(runtime, str(tenant.id), routed_payload)
     return ResolvedChatRequest(
+        request_context=context,
         tenant=tenant,
         model_name=model_name,
         routed_payload=routed_payload,
@@ -205,7 +229,7 @@ def complete_request_record(
     cost_value: float,
     started_at: float,
 ) -> None:
-    requests.mark_completed(
+    requests.complete_chat_request(
         req_row,
         response.model_dump_json(),
         int((time.perf_counter() - started_at) * 1000),
@@ -213,6 +237,23 @@ def complete_request_record(
         usage.completion_tokens,
         usage.total_tokens,
         cost_value,
+        provider_name=req_row.provider_name or "unknown",
+        route_reason=req_row.route_reason or "unknown",
+        cache_status=req_row.cache_status or "bypass",
     )
-    usage_repo.add(tenant.id, req_row.id, model_name, usage.total_tokens, cost_value)
+    usage_repo.record_request_usage(tenant.id, req_row.id, model_name, usage.total_tokens, cost_value)
     record_metrics(tenant, model_name, req_row.total_tokens or 0, req_row.cost_usd or 0.0)
+
+
+def log_route_resolution(runtime: AppRuntime, resolved: ResolvedChatRequest) -> None:
+    log_chat_event(
+        runtime,
+        "chat_routed",
+        resolved.request_context,
+        tenant=str(resolved.tenant.id),
+        model=resolved.model_name,
+        provider=resolved.provider_name,
+        route_reason=resolved.route_reason,
+        fallback_provider=resolved.fallback_provider_name,
+        cache_lookup=resolved.cache_lookup_key is not None,
+    )

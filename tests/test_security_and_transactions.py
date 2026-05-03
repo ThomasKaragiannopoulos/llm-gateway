@@ -38,6 +38,23 @@ def test_legacy_api_key_hashes_still_authenticate(runtime) -> None:
     assert response.status_code == 200
 
 
+def test_successful_auth_updates_api_key_last_used_at(runtime) -> None:
+    app = __import__("app.bootstrap", fromlist=["create_app"]).create_app(runtime=runtime)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat",
+            headers=_auth_headers("admin-secret"),
+            json={"model": "tenant-default", "messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 200
+    with session_scope(runtime.session_factory) as db:
+        admin = TenantRepository(db).ensure_admin()
+        api_key = ApiKeyRepository(db).get_active_for_tenant(admin.id)
+        assert api_key is not None
+        assert api_key.last_used_at is not None
+
+
 def test_prod_settings_require_pepper_and_non_default_bootstrap_token() -> None:
     from app.config import DEFAULT_BOOTSTRAP_ADMIN_TOKEN, Settings
 

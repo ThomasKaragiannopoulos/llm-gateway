@@ -25,6 +25,9 @@ class FakeRedis:
         _ = ex
         self.store[key] = value
 
+    async def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
     async def incr(self, key: str) -> int:
         value = self.counters.get(key, 0) + 1
         self.counters[key] = value
@@ -42,6 +45,9 @@ class FakeRedis:
         return True
 
     async def close(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
         return None
 
 
