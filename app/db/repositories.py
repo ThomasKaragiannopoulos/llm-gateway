@@ -201,6 +201,13 @@ class ApiKeyRepository:
             .one_or_none()
         )
 
+    def get_by_tenant_id_and_name(self, tenant_id: uuid.UUID, key_name: str) -> ApiKey | None:
+        return (
+            self.db.query(ApiKey)
+            .filter(ApiKey.tenant_id == tenant_id, ApiKey.name == key_name)
+            .one_or_none()
+        )
+
     def deactivate_active_by_tenant_and_name(self, tenant_name: str, key_name: str) -> ApiKey | None:
         key = self.get_active_by_tenant_and_name(tenant_name, key_name)
         if key is None:
@@ -228,6 +235,19 @@ class ApiKeyRepository:
 
     def get_active_for_tenant(self, tenant_id: uuid.UUID) -> ApiKey | None:
         return self.db.query(ApiKey).filter(ApiKey.tenant_id == tenant_id, ApiKey.active.is_(True)).first()
+
+    def rotate_named_key(self, tenant_id: uuid.UUID, key_name: str, key_hash: str) -> ApiKey:
+        row = self.get_by_tenant_id_and_name(tenant_id, key_name)
+        if row is None:
+            return self.add(tenant_id, key_hash, name=key_name, active=True)
+        row.key_hash = key_hash
+        row.active = True
+        row.revoked_at = None
+        row.revoked_reason = None
+        self.db.add(row)
+        self.db.flush()
+        self.db.refresh(row)
+        return row
 
 
 class PricingRepository:

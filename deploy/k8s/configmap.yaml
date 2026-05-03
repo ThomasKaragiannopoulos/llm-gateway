@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-gateway-config
+  namespace: llm-gateway
+data:
+  ENVIRONMENT: production
+  PROVIDER_MODE: ollama
+  OLLAMA_URL: http://ollama.default.svc.cluster.local:11434
+  ALLOW_ADMIN_RESET: "false"
+  REQUESTS_PER_MINUTE: "60"
+  TOKENS_PER_MINUTE: "120000"
+  CACHE_TTL_SECONDS: "300"
+  CACHE_VERSION: k8s-v1
+  PROMETHEUS_URL: http://prometheus.monitoring.svc.cluster.local:9090
+  GRAFANA_URL: http://grafana.monitoring.svc.cluster.local:3000
+  DATABASE_URL: postgresql+psycopg://llm:change-me@postgresql.default.svc.cluster.local:5432/llm_gateway
+  REDIS_URL: redis://redis.default.svc.cluster.local:6379/0

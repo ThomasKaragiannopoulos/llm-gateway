@@ -22,7 +22,7 @@ class EvalCase:
 
 def load_cases(path: str) -> list[EvalCase]:
     cases: list[EvalCase] = []
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         for line in handle:
             payload = json.loads(line)
             cases.append(
@@ -57,8 +57,8 @@ def call_api(base_url: str, api_key: str, model: str, prompt: str) -> str:
     return resp.json()["content"]
 
 
-def run_eval(cases: list[EvalCase], mode: str, base_url: str, api_key: str, model: str):
-    results = []
+def run_eval(cases: list[EvalCase], mode: str, base_url: str, api_key: str, model: str) -> list[dict]:
+    results: list[dict] = []
     for case in cases:
         start = time.perf_counter()
         if mode == "fixture":

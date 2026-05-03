@@ -65,7 +65,7 @@ def rotate_admin_key(runtime: AppRuntime) -> str:
         keys = ApiKeyRepository(db)
         admin_tenant = tenants.ensure_admin()
         keys.deactivate_for_tenant(admin_tenant.id)
-        keys.add(admin_tenant.id, key_hash, name="admin", active=True)
+        keys.rotate_named_key(admin_tenant.id, "admin", key_hash)
     return raw_key
 
 

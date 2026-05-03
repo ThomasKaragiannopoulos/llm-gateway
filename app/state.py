@@ -1,7 +1,9 @@
-"""Backward-compatible proxy to the shared runtime state."""
+"""Backward-compatible placeholder for modules that previously imported app.state."""
 
-from app.runtime import state as _runtime_state
+from __future__ import annotations
 
+from app.runtime import AppRuntime
 
-def __getattr__(name: str):
-    return getattr(_runtime_state, name)
+runtime: AppRuntime | None = None
+
+__all__ = ["runtime"]

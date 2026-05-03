@@ -1,9 +1,9 @@
-
 import asyncio
+from collections.abc import AsyncIterator
 
 import pytest
 
-from app.provider import Provider, ProviderResult
+from app.provider import Provider, ProviderResult, StreamChunk
 from app.reliability import CircuitBreaker, CircuitOpenError, ResilientProvider, RetryConfig
 from app.schemas import ChatMessage, ChatRequest, ChatResponse
 
@@ -20,7 +20,7 @@ class FlakyProvider(Provider):
         response = ChatResponse(id="1", model=request.model, created=0, content="ok")
         return ProviderResult(response=response, prompt_tokens=1, completion_tokens=1, total_tokens=2)
 
-    async def stream(self, request: ChatRequest):
+    def stream(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
         raise RuntimeError("not used")
 
 

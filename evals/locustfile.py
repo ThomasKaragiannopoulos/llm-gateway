@@ -11,11 +11,12 @@ The script bootstraps a dedicated load-test tenant and API key on startup
 using ADMIN_API_KEY from the environment, so no manual setup is needed.
 """
 
+import json
 import os
+import urllib.request
 import uuid
 
 from locust import HttpUser, between, events, task
-
 
 ADMIN_KEY = os.getenv("ADMIN_API_KEY", "changeme")
 _TENANT_NAME = f"loadtest-{uuid.uuid4().hex[:8]}"
@@ -32,7 +33,6 @@ def on_test_start(environment, **kwargs):
     global _TENANT_API_KEY
 
     host = environment.host.rstrip("/")
-    import urllib.request, json as _json
 
     headers = {
         "Authorization": f"Bearer {ADMIN_KEY}",
@@ -40,10 +40,10 @@ def on_test_start(environment, **kwargs):
     }
 
     def _post(path: str, body: dict) -> dict:
-        data = _json.dumps(body).encode()
+        data = json.dumps(body).encode()
         req = urllib.request.Request(f"{host}{path}", data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return _json.loads(resp.read())
+            return json.loads(resp.read())
 
     try:
         _post("/v1/admin/tenants", {"tenant": _TENANT_NAME, "tier": "pro"})

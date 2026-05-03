@@ -76,6 +76,7 @@ def test_invalid_cached_payload_is_invalidated_and_recomputed(client: TestClient
         str(tenant.id),
         ChatRequest.model_validate(payload),
     )
+    assert runtime.redis_client is not None
     runtime.redis_client.store[cache_lookup_key] = '{"response":{"id":"1"}}'
 
     response = client.post("/v1/chat", headers=_auth_headers("admin-secret"), json=payload)
